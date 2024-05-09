@@ -1,0 +1,31 @@
+name: PullRequestOpenerAgent
+description: "Open a pull request for pending changes in the repository"
+inputs: {}
+subagents:
+  - name: CommitterAgent
+    prompt: commit.md
+  - name: PullRequestAgent
+    prompt: pull_request.md
+workflow:
+  - name: add_changes
+    do:
+      action: run
+      args:
+        command: git add .
+  - name: generate_message
+    do:
+      action: delegate
+      args:
+        agent: CommitWriterAgent
+  - name: commit_changes
+    do:
+      action: delegate
+      args:
+        agent: PullRequestOpenerAgent_CommitterAgent
+        inputs:
+          commit_message: '{{ generate_message.outputs.commit_message }}'
+  - name: open_pull_request
+    do:
+      action: delegate
+      args:
+        agent: PullRequestOpenerAgent_PullRequestAgent
