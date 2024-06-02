@@ -5,7 +5,6 @@ import sys
 import tarfile
 import time
 import uuid
-from collections import namedtuple
 from glob import glob
 
 import docker
@@ -15,82 +14,9 @@ from opendevin.core.const.guide_url import TROUBLESHOOTING_URL
 from opendevin.core.exceptions import SandboxInvalidBackgroundCommandError
 from opendevin.core.logger import opendevin_logger as logger
 from opendevin.core.schema import CancellableStream
-from opendevin.runtime.docker.process import DockerProcess, Process
 from opendevin.runtime.sandbox import Sandbox
-
-# FIXME these are not used, should we remove them?
-InputType = namedtuple('InputType', ['content'])
-OutputType = namedtuple('OutputType', ['content'])
-
-
-ExecResult = namedtuple('ExecResult', 'exit_code,output')
-""" A result of Container.exec_run with the properties ``exit_code`` and
-    ``output``. """
-
-
-class DockerExecCancellableStream(CancellableStream):
-    # Reference: https://github.com/docker/docker-py/issues/1989
-    def __init__(self, _client, _id, _output):
-        super().__init__(self.read_output())
-        self._id = _id
-        self._client = _client
-        self._output = _output
-
-    def close(self):
-        self.closed = True
-
-    def exit_code(self):
-        return self.inspect()['ExitCode']
-
-    def inspect(self):
-        return self._client.api.exec_inspect(self._id)
-
-    def read_output(self):
-        for chunk in self._output:
-            yield chunk.decode('utf-8')
-
-
-def container_exec_run(
-    container,
-    cmd,
-    stdout=True,
-    stderr=True,
-    stdin=False,
-    tty=False,
-    privileged=False,
-    user='',
-    detach=False,
-    stream=False,
-    socket=False,
-    environment=None,
-    workdir=None,
-) -> ExecResult:
-    exec_id = container.client.api.exec_create(
-        container.id,
-        cmd,
-        stdout=stdout,
-        stderr=stderr,
-        stdin=stdin,
-        tty=tty,
-        privileged=privileged,
-        user=user,
-        environment=environment,
-        workdir=workdir,
-    )['Id']
-
-    output = container.client.api.exec_start(
-        exec_id, detach=detach, tty=tty, stream=stream, socket=socket
-    )
-
-    if stream:
-        return ExecResult(
-            None, DockerExecCancellableStream(container.client, exec_id, output)
-        )
-
-    if socket:
-        return ExecResult(None, output)
-
-    return ExecResult(container.client.api.exec_inspect(exec_id)['ExitCode'], output)
+from opendevin.runtime.sandbox.docker.process import DockerProcess, Process
+from opendevin.runtime.sandbox.stream.exec import container_exec_run
 
 
 class DockerExecBox(Sandbox):
@@ -139,37 +65,36 @@ class DockerExecBox(Sandbox):
         logger.info(
             'Starting Docker container with image %s, sandbox workspace dir=%s',
             self.container_image,
-            self.sandbox_workspace_dir,
+            config.workspace_mount_path_in_sandbox,
         )
 
         # always restart the container, cuz the initial be regarded as a new session
         self.restart_docker_container()
 
-        if self.run_as_devin:
+        if config.ssh_username == 'opendevin':  # FIXME: ssh_username is a misnomer here
             self.setup_devin_user()
         atexit.register(self.close)
         super().__init__()
 
     def setup_devin_user(self):
         cmds = [
-            f'useradd --shell /bin/bash -u {self.user_id} -o -c "" -m devin',
+            f'useradd --shell /bin/bash -u {config.sandbox_user_id} -o -c "" -m opendevin',
             r"echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers",
-            'sudo adduser devin sudo',
+            'sudo adduser opendevin sudo',
         ]
         for cmd in cmds:
             exit_code, logs = self.container.exec_run(
                 ['/bin/bash', '-c', cmd],
-                workdir=self.sandbox_workspace_dir,
+                workdir=config.workspace_mount_path_in_sandbox,
                 environment=self._env,
             )
             if exit_code != 0:
-                raise Exception(f'Failed to setup devin user: {logs}')
+                raise Exception(f'Failed to setup opendevin user: {logs}')
 
     def get_exec_cmd(self, cmd: str) -> list[str]:
-        if self.run_as_devin:
-            return ['su', 'devin', '-c', cmd]
-        else:
+        if config.ssh_username == 'root':
             return ['/bin/bash', '-c', cmd]
+        return ['su', config.ssh_username, '-c', cmd]
 
     def read_logs(self, id) -> str:
         if id not in self.background_commands:
@@ -186,7 +111,7 @@ class DockerExecBox(Sandbox):
             self.container,
             wrapper,
             stream=stream,
-            workdir=self.sandbox_workspace_dir,
+            workdir=config.workspace_mount_path_in_sandbox,
             environment=self._env,
         )
 
@@ -203,7 +128,7 @@ class DockerExecBox(Sandbox):
         # mkdir -p sandbox_dest if it doesn't exist
         exit_code, logs = self.container.exec_run(
             ['/bin/bash', '-c', f'mkdir -p {sandbox_dest}'],
-            workdir=self.sandbox_workspace_dir,
+            workdir=config.workspace_mount_path_in_sandbox,
             environment=self._env,
         )
         if exit_code != 0:
@@ -242,7 +167,7 @@ class DockerExecBox(Sandbox):
         result = self.container.exec_run(
             self.get_exec_cmd(cmd),
             socket=True,
-            workdir=self.sandbox_workspace_dir,
+            workdir=config.workspace_mount_path_in_sandbox,
             environment=self._env,
         )
         result.output._sock.setblocking(0)
@@ -270,7 +195,7 @@ class DockerExecBox(Sandbox):
         if bg_cmd.pid is not None:
             self.container.exec_run(
                 f'kill -9 {bg_cmd.pid}',
-                workdir=self.sandbox_workspace_dir,
+                workdir=config.workspace_mount_path_in_sandbox,
                 environment=self._env,
             )
         assert isinstance(bg_cmd, DockerProcess)
@@ -318,10 +243,15 @@ class DockerExecBox(Sandbox):
                 self.container_image,
                 command='tail -f /dev/null',
                 network_mode='host',
-                working_dir=self.sandbox_workspace_dir,
+                working_dir=config.workspace_mount_path_in_sandbox,
                 name=self.container_name,
                 detach=True,
-                volumes={mount_dir: {'bind': self.sandbox_workspace_dir, 'mode': 'rw'}},
+                volumes={
+                    mount_dir: {
+                        'bind': config.workspace_mount_path_in_sandbox,
+                        'mode': 'rw',
+                    }
+                },
             )
             logger.info('Container started')
         except Exception as ex:
@@ -355,20 +285,6 @@ class DockerExecBox(Sandbox):
                 pass
 
     def get_working_directory(self):
-        return self.sandbox_workspace_dir
-
-    @property
-    def user_id(self):
-        return config.sandbox_user_id
-
-    @property
-    def run_as_devin(self):
-        # FIXME: On some containers, the devin user doesn't have enough permission, e.g. to install packages
-        # How do we make this more flexible?
-        return config.run_as_devin
-
-    @property
-    def sandbox_workspace_dir(self):
         return config.workspace_mount_path_in_sandbox
 
 
