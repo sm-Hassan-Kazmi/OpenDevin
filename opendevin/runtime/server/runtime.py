@@ -35,7 +35,7 @@ class ServerRuntime(Runtime):
         sandbox: Sandbox | None = None,
     ):
         super().__init__(event_stream, sid, sandbox)
-        self.file_store = LocalFileStore(config.workspace_base)
+        self.file_store = LocalFileStore(config.sandbox.workspace_base)
 
     def _is_python_code(self, text):
         """

@@ -129,7 +129,7 @@ def process_instance(
     instance, agent_class, metadata, skip_workspace_mount, reset_logger: bool = True
 ):
     workspace_mount_path = os.path.join(
-        config.workspace_mount_path, 'bird_eval_workspace'
+        config.sandbox.workspace_mount_path, 'bird_eval_workspace'
     )
     # create process-specific workspace dir
     # if `not skip_workspace_mount` - we will create a workspace directory for EACH process
@@ -139,11 +139,13 @@ def process_instance(
         pathlib.Path(workspace_mount_path).mkdir(parents=True, exist_ok=True)
 
     # reset workspace to config
-    config.workspace_mount_path = workspace_mount_path
+    config.sandbox.workspace_mount_path = workspace_mount_path
 
     # Copy the database to the workspace
     db_root = os.path.join(
-        config.workspace_base, 'evaluation_bird/dev/dev_databases', instance.db_id
+        config.sandbox.workspace_base,
+        'evaluation_bird/dev/dev_databases',
+        instance.db_id,
     )
     target_path = os.path.join(workspace_mount_path, f'{instance.db_id}')
     if not os.path.exists(target_path):
@@ -199,7 +201,7 @@ def process_instance(
         print(result)
     """
     path = os.path.join(
-        config.workspace_mount_path, f'{instance.task_id.replace("/", "__")}.py'
+        config.sandbox.workspace_mount_path, f'{instance.task_id.replace("/", "__")}.py'
     )
     instruction = (
         f'You are a SQL expert and need to complete the following text-to-SQL tasks.'
@@ -262,7 +264,7 @@ def download_bird():
     """
     Downloads and extracts the bird dataset from a specified URL into a local directory.
     """
-    dataset_path = os.path.join(config.workspace_base, 'evaluation_bird')
+    dataset_path = os.path.join(config.sandbox.workspace_base, 'evaluation_bird')
     devset_path = os.path.join(dataset_path, 'dev')
     if not os.path.exists(dataset_path):
         logger.info(

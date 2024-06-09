@@ -54,7 +54,7 @@ def test_compat_env_to_config(monkeypatch, setup_env):
     config = AppConfig()
     load_from_env(config, os.environ)
 
-    assert config.workspace_base == '/repos/opendevin/workspace'
+    assert config.sandbox.workspace_base == '/repos/opendevin/workspace'
     assert isinstance(config.llm, LLMConfig)
     assert config.llm.api_key == 'sk-proj-rgMV0...'
     assert config.llm.model == 'gpt-4o'
@@ -75,7 +75,7 @@ def test_load_from_old_style_env(monkeypatch, default_config):
     assert default_config.llm.api_key == 'test-api-key'
     assert default_config.agent.memory_enabled is True
     assert default_config.agent.name == 'PlannerAgent'
-    assert default_config.workspace_base == '/opt/files/workspace'
+    assert default_config.sandbox.workspace_base == '/opt/files/workspace'
 
 
 def test_load_from_new_style_toml(default_config, temp_toml_file):
@@ -100,7 +100,7 @@ workspace_base = "/opt/files2/workspace"
     assert default_config.llm.api_key == 'toml-api-key'
     assert default_config.agent.name == 'TestAgent'
     assert default_config.agent.memory_enabled is True
-    assert default_config.workspace_base == '/opt/files2/workspace'
+    assert default_config.sandbox.workspace_base == '/opt/files2/workspace'
 
 
 def test_env_overrides_toml(monkeypatch, default_config, temp_toml_file):
@@ -113,8 +113,10 @@ api_key = "toml-api-key"
 
 [core]
 workspace_base = "/opt/files3/workspace"
-sandbox_type = "local"
 disable_color = true
+
+[sandbox]
+type = "local"
 """)
 
     monkeypatch.setenv('LLM_API_KEY', 'env-api-key')
@@ -127,8 +129,8 @@ disable_color = true
     assert os.environ.get('LLM_MODEL') is None
     assert default_config.llm.model == 'test-model'
     assert default_config.llm.api_key == 'env-api-key'
-    assert default_config.workspace_base == '/opt/files4/workspace'
-    assert default_config.sandbox_type == 'ssh'
+    assert default_config.sandbox.workspace_base == '/opt/files4/workspace'
+    assert default_config.sandbox.type == 'ssh'
     assert default_config.disable_color is True
 
 
@@ -168,40 +170,40 @@ def test_invalid_toml_format(monkeypatch, temp_toml_file, default_config):
 
 def test_finalize_config(default_config):
     # Test finalize config
-    default_config.sandbox_type = 'local'
+    default_config.sandbox.type = 'local'
     finalize_config(default_config)
 
     assert (
-        default_config.workspace_mount_path_in_sandbox
-        == default_config.workspace_mount_path
+        default_config.sandbox.workspace_mount_path_in_sandbox
+        == default_config.sandbox.workspace_mount_path
     )
 
 
 # tests for workspace, mount path, path in sandbox, cache dir
 def test_workspace_mount_path_default(default_config):
-    assert default_config.workspace_mount_path is None
+    assert default_config.sandbox.workspace_mount_path is None
     finalize_config(default_config)
-    assert default_config.workspace_mount_path == os.path.abspath(
-        default_config.workspace_base
+    assert default_config.sandbox.workspace_mount_path == os.path.abspath(
+        default_config.sandbox.workspace_base
     )
 
 
 def test_workspace_mount_path_in_sandbox_local(default_config):
-    assert default_config.workspace_mount_path_in_sandbox == '/workspace'
-    default_config.sandbox_type = 'local'
+    assert default_config.sandbox.workspace_mount_path_in_sandbox == '/workspace'
+    default_config.sandbox.type = 'local'
     finalize_config(default_config)
     assert (
-        default_config.workspace_mount_path_in_sandbox
-        == default_config.workspace_mount_path
+        default_config.sandbox.workspace_mount_path_in_sandbox
+        == default_config.sandbox.workspace_mount_path
     )
 
 
 def test_workspace_mount_rewrite(default_config, monkeypatch):
-    default_config.workspace_base = '/home/user/project'
+    default_config.sandbox.workspace_base = '/home/user/project'
     default_config.workspace_mount_rewrite = '/home/user:/sandbox'
     monkeypatch.setattr('os.getcwd', lambda: '/current/working/directory')
     finalize_config(default_config)
-    assert default_config.workspace_mount_path == '/sandbox/project'
+    assert default_config.sandbox.workspace_mount_path == '/sandbox/project'
 
 
 def test_embedding_base_url_default(default_config):

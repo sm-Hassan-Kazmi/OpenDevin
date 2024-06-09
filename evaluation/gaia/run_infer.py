@@ -76,15 +76,15 @@ def process_instance(instance, agent_class, metadata, reset_logger: bool = True)
     # create process-specific workspace dir
     # we will create a workspace directory for EACH process
     # so that different agent don't interfere with each other.
-    old_workspace_mount_path = config.workspace_mount_path
+    old_workspace_mount_path = config.sandbox.workspace_mount_path
 
     try:
         workspace_mount_path = os.path.join(
-            config.workspace_mount_path, '_eval_workspace'
+            config.sandbox.workspace_mount_path, '_eval_workspace'
         )
         workspace_mount_path = os.path.join(workspace_mount_path, str(os.getpid()))
         pathlib.Path(workspace_mount_path).mkdir(parents=True, exist_ok=True)
-        config.workspace_mount_path = workspace_mount_path
+        config.sandbox.workspace_mount_path = workspace_mount_path
 
         # Setup the logger properly, so you can run multi-processing to parallelize the evaluation
         eval_output_dir = metadata['eval_output_dir']
@@ -203,7 +203,7 @@ def process_instance(instance, agent_class, metadata, reset_logger: bool = True)
         logger.error('Process instance failed')
         raise
     finally:
-        config.workspace_mount_path = old_workspace_mount_path
+        config.sandbox.workspace_mount_path = old_workspace_mount_path
     return output
 
 
@@ -221,8 +221,8 @@ if __name__ == '__main__':
     )
     args, _ = parser.parse_known_args()
     if args.directory:
-        config.workspace_base = os.path.abspath(args.directory)
-        logger.info(f'Setting workspace base to {config.workspace_base}')
+        config.sandbox.workspace_base = os.path.abspath(args.directory)
+        logger.info(f'Setting workspace base to {config.sandbox.workspace_base}')
     # NOTE: It is preferable to load datasets from huggingface datasets and perform post-processing
     # so we don't need to manage file uploading to OpenDevin's repo
     level = args.level
