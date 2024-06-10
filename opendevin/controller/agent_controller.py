@@ -52,6 +52,7 @@ class AgentController:
     parent: 'AgentController | None' = None
     delegate: 'AgentController | None' = None
     _pending_action: Action | None = None
+    history: ShortTermHistory
 
     def __init__(
         self,
@@ -174,7 +175,7 @@ class AgentController:
                 logger.info(event, extra={'msg_type': 'OBSERVATION'})
             elif isinstance(event, AgentDelegateObservation):
                 logger.info(event, extra={'msg_type': 'OBSERVATION'})
-                self.state.history.on_event(event)
+                self.history.on_event(event)
 
     def reset_task(self):
         self.agent.reset()
@@ -289,7 +290,7 @@ class AgentController:
         self.update_state_before_step()
         action: Action = NullAction()
         try:
-            action = self.agent.step(self.state)
+            action = self.agent.step(self.state, self.history)
             if action is None:
                 raise AgentNoActionError('No action was returned')
         except (
@@ -326,12 +327,8 @@ class AgentController:
             self.state = state
 
         # initialize short term memory
-        history = (
-            ShortTermHistory(llm=self.agent.llm)
-            if state is None or not hasattr(state, 'history') or state.history is None
-            else state.history
-        )
-        history.set_event_stream(self.event_stream)
+        self.history = ShortTermHistory(llm=self.agent.llm)
+        self.history.set_event_stream(self.event_stream)
 
         # if start_id was not set in State, we're starting fresh, at the top of the stream
         start_id = self.state.start_id
@@ -340,8 +337,7 @@ class AgentController:
         else:
             logger.debug(f'AgentController {self.id} restoring from event {start_id}')
         self.state.start_id = start_id
-        history.start_id = start_id
-        self.state.history = history
+        self.history.start_id = start_id
 
     def _is_stuck(self):
         # check if delegate stuck

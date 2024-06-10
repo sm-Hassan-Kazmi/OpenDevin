@@ -32,6 +32,7 @@ from opendevin.events.observation import (
 )
 from opendevin.events.serialization.event import truncate_content
 from opendevin.llm.llm import LLM
+from opendevin.memory.history import ShortTermHistory
 from opendevin.runtime.plugins import (
     AgentSkillsRequirement,
     JupyterRequirement,
@@ -180,7 +181,7 @@ class CodeActAgent(Agent):
         """
         super().reset()
 
-    def step(self, state: State) -> Action:
+    def step(self, state: State, history: ShortTermHistory) -> Action:
         """
         Run the agent for one step.
 
@@ -197,7 +198,7 @@ class CodeActAgent(Agent):
         logger.info(f'Running CodeActAgent v{self.VERSION}')
 
         # if we're done, go back
-        latest_user_message = state.history.get_latest_user_message()
+        latest_user_message = history.get_latest_user_message()
         if latest_user_message and latest_user_message.strip() == '/exit':
             return AgentFinishAction()
 
