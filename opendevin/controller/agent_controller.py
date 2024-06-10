@@ -327,7 +327,7 @@ class AgentController:
 
         # initialize short term memory
         history = (
-            ShortTermHistory()
+            ShortTermHistory(llm=self.agent.llm)
             if state is None or not hasattr(state, 'history') or state.history is None
             else state.history
         )

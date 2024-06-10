@@ -170,7 +170,7 @@ class MemoryCondenser:
             logger.error(f'Failed to summarize chunk: {e}')
             raise
 
-    def delegate_summary(
+    def summarize_delegate(
         self, delegate_events: list[Event], delegate_agent: str, delegate_task: str
     ) -> AgentDelegateSummaryAction:
         """

@@ -32,7 +32,6 @@ from opendevin.events.observation import (
 )
 from opendevin.events.serialization.event import truncate_content
 from opendevin.llm.llm import LLM
-from opendevin.memory.condenser import MemoryCondenser
 from opendevin.runtime.plugins import (
     AgentSkillsRequirement,
     JupyterRequirement,
@@ -173,7 +172,6 @@ class CodeActAgent(Agent):
         - llm (LLM): The llm to be used by this agent
         """
         super().__init__(llm)
-        self.memory_condenser = MemoryCondenser(llm)
         self.reset()
 
     def reset(self) -> None:
@@ -228,7 +226,7 @@ class CodeActAgent(Agent):
                 )
 
                 # Retry processing events with condensed memory
-                summary_action = self.memory_condenser.condense(state.history)
+                summary_action = state.history.condense_memory()
                 attempt += 1
                 if summary_action:
                     # update the messages, so we get the new summary
