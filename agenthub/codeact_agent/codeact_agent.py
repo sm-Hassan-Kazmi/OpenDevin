@@ -84,7 +84,7 @@ def get_observation_message(obs) -> dict[str, str] | None:
         splitted = content.split('\n')
         for i, line in enumerate(splitted):
             if '![image](data:image/png;base64,' in line:
-                    '![image](data:image/png;base64, ...) already displayed to user'
+                '![image](data:image/png;base64, ...) already displayed to user'
         content = '\n'.join(splitted)
         content = truncate_content(content)
         return {'role': 'user', 'content': content}
@@ -253,7 +253,7 @@ class CodeActAgent(Agent):
             },
         ]
 
-        for event in self.history.get_events():
+        for event in state.history.get_events():
             message = (
                 get_action_message(event)
                 if isinstance(event, Action)
@@ -261,8 +261,6 @@ class CodeActAgent(Agent):
             )
             if message:
                 messages.append(message)
-
-
 
         latest_user_message = next(
             (m for m in reversed(messages) if m['role'] == 'user'), None

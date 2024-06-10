@@ -19,7 +19,6 @@ from opendevin.events.observation.observation import Observation
 from opendevin.events.serialization.event import event_to_dict
 from opendevin.events.stream import EventStream
 from opendevin.llm.llm import LLM
-from opendevin.memory.condenser import MemoryCondenser
 
 
 class ShortTermHistory(list[Event]):
@@ -30,7 +29,6 @@ class ShortTermHistory(list[Event]):
     start_id: int
     end_id: int
     _event_stream: EventStream
-    memory_condenser: MemoryCondenser
     summaries: dict[tuple[int, int], AgentSummarizeAction]
     delegate_summaries: dict[tuple[int, int], AgentDelegateSummaryAction]
 
@@ -41,16 +39,20 @@ class ShortTermHistory(list[Event]):
         AgentStateChangedObservation,
     )
 
-    def __init__(self, llm: LLM):
+    def __init__(self):
         super().__init__()
         self.start_id = -1
         self.end_id = -1
         self.summaries = {}
         self.delegate_summaries = {}
-        self.memory_condenser = MemoryCondenser(llm)
 
     def set_event_stream(self, event_stream: EventStream):
         self._event_stream = event_stream
+
+    def init_memory_condenser(self, llm: LLM):
+        from opendevin.memory.condenser import MemoryCondenser
+
+        self.memory_condenser = MemoryCondenser(llm)
 
     def get_events_as_list(self) -> list[Event]:
         """
