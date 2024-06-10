@@ -38,8 +38,9 @@ ENABLE_GITHUB = True
 def parse_response(response) -> str:
     action = response.choices[0].message.content
     for lang in ['bash', 'ipython', 'browse']:
-        if f'<execute_{lang}>' in action and f'</execute_{lang}>' not in action:
-            action += f'</execute_{lang}>'
+        open_tag, close_tag = f'<execute_{lang}>', f'</execute_{lang}>'
+        if open_tag in action and close_tag not in action:
+            action += close_tag
     return action
 
 
@@ -255,6 +256,7 @@ class CodeActAgent(Agent):
             thought = action_str.replace(bash_command.group(0), '').strip()
             # a command was found
             command_group = bash_command.group(1).strip()
+            command_group = command_group.split('<execute_bash>')[-1]
 
             if command_group.strip() == 'exit':
                 return AgentFinishAction()
@@ -264,6 +266,7 @@ class CodeActAgent(Agent):
         ):
             # a code block was found
             code_group = python_code.group(1).strip()
+            code_group = code_group.split('<execute_ipython>')[-1]
             thought = action_str.replace(python_code.group(0), '').strip()
             return IPythonRunCellAction(
                 code=code_group,
@@ -275,6 +278,7 @@ class CodeActAgent(Agent):
         ):
             thought = action_str.replace(browse_command.group(0), '').strip()
             browse_actions = browse_command.group(1).strip()
+            browse_actions = browse_actions.split('<execute_browse>')[-1]
             task = f'{thought}. I should start with: {browse_actions}'
             return AgentDelegateAction(agent='BrowsingAgent', inputs={'task': task})
         else:
