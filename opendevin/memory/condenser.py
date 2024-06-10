@@ -1,6 +1,6 @@
 from opendevin.core.logger import opendevin_logger as logger
-from opendevin.core.utils import json
 from opendevin.events.action.agent import (
+    AgentDelegateSummaryAction,
     AgentFinishAction,
     AgentRecallAction,
     AgentSummarizeAction,
@@ -19,7 +19,12 @@ from opendevin.events.observation.observation import Observation
 from opendevin.events.serialization.event import event_to_memory
 from opendevin.llm.llm import LLM
 from opendevin.memory.history import ShortTermHistory
-from opendevin.memory.prompts import parse_summary_response
+from opendevin.memory.prompts import (
+    get_delegate_summarize_prompt,
+    get_summarize_prompt,
+    parse_delegate_summary_response,
+    parse_summary_response,
+)
 
 MAX_USER_MESSAGE_CHAR_COUNT = 200  # max char count for user messages
 
@@ -75,9 +80,8 @@ class MemoryCondenser:
             # aside from them, there are some (mostly or firstly) non-summarizable actions
             # like AgentDelegateAction or AgentFinishAction
             if not self._is_summarizable(event):
-                if chunk:
-                    # TODO exclude agent single-messages
-                    # we've just gathered a chunk to summarize
+                if chunk and len(chunk) > 1:
+                    # we've just gathered a chunk to summarize, more than one event
                     summary_action = self._summarize_chunk(chunk)
 
                     # mypy is happy with assert, and in fact it cannot/should not be None
@@ -92,6 +96,8 @@ class MemoryCondenser:
                     history.add_summary(summary_action)
                     return summary_action
                 else:
+                    # reset the chunk if it has just one event
+                    chunk = []
                     chunk_start_id = None
                     last_summarizable_id = None
             else:
@@ -101,7 +107,7 @@ class MemoryCondenser:
                 last_summarizable_id = event.id
                 chunk.append(event)
 
-        if chunk:
+        if chunk and len(chunk) > 1:
             summary_action = self._summarize_chunk(chunk)
 
             # keep mypy happy
@@ -151,26 +157,47 @@ class MemoryCondenser:
         - The summary sentence.
         """
         try:
-            event_dicts = []
-            for event in chunk:
-                event_dicts.append(event_to_memory(event))
-            events_str = json.dumps(event_dicts, indent=2)
-
-            prompt = """
-            Given the following actions and observations, create a JSON response with:
-                - "action": "summarize"
-                - args:
-                  - "summarized_actions": A comma-separated list of unique action names from the provided actions
-                  - "summary": A single sentence summarizing all the provided observations
-            """ + '\n'.join(events_str)
+            event_dicts = [event_to_memory(event) for event in chunk]
+            prompt = get_summarize_prompt(event_dicts)
 
             messages = [{'role': 'user', 'content': prompt}]
             response = self.llm.completion(messages=messages)
+
             action_response = response['choices'][0]['message']['content']
             action = parse_summary_response(action_response)
             return action
         except Exception as e:
             logger.error(f'Failed to summarize chunk: {e}')
+            raise
+
+    def delegate_summary(
+        self, delegate_events: list[Event], delegate_agent: str, delegate_task: str
+    ) -> AgentDelegateSummaryAction:
+        """
+        Summarizes the given list of events into a concise summary.
+
+        Parameters:
+        - delegate_events: List of events of the delegate.
+        - delegate_agent: The agent that was delegated to.
+        - delegate_task: The task that was delegated.
+
+        Returns:
+        - The summary of the delegate's activities.
+        """
+        try:
+            event_dicts = [event_to_memory(event) for event in delegate_events]
+            prompt = get_delegate_summarize_prompt(
+                event_dicts, delegate_agent, delegate_task
+            )
+
+            messages = [{'role': 'user', 'content': prompt}]
+            response = self.llm.completion(messages=messages)
+
+            action_response: str = response['choices'][0]['message']['content']
+            action = parse_delegate_summary_response(action_response)
+            return action
+        except Exception as e:
+            logger.error(f'Failed to summarize delegate events: {e}')
             raise
 
     def _is_summarizable(self, event: Event) -> bool:
