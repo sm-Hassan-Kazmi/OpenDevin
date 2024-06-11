@@ -10,6 +10,7 @@ from opendevin.controller.agent import Agent
 from opendevin.controller.state.state import State
 from opendevin.events.action import (
     Action,
+    AgentDelegateAction,
     AgentFinishAction,
     BrowseInteractiveAction,
     CmdRunAction,
@@ -40,6 +41,10 @@ def action_to_str(action: Action) -> str:
         return f'{action.thought}\n<execute_ipython>\n{action.code}\n</execute_ipython>'
     elif isinstance(action, BrowseInteractiveAction):
         return f'{action.thought}\n<execute_browse>\n{action.browser_actions}\n</execute_browse>'
+    elif isinstance(action, AgentDelegateAction):
+        return (
+            f'{action.thought}\n<execute_delegate>\n{action.agent}\n</execute_delegate>'
+        )
     elif isinstance(action, MessageAction):
         return action.content
     return ''
@@ -51,6 +56,7 @@ def get_action_message(action: Action) -> dict[str, str] | None:
         or isinstance(action, CmdRunAction)
         or isinstance(action, IPythonRunCellAction)
         or isinstance(action, MessageAction)
+        or isinstance(action, AgentDelegateAction)
     ):
         return {
             'role': 'user' if action.source == 'user' else 'assistant',
@@ -195,6 +201,7 @@ class CodeActAgent(Agent):
         Returns:
         - CmdRunAction(command) - bash command to run
         - IPythonRunCellAction(code) - IPython code to run
+        - BrowseInteractiveAction(browsergym_command) - BrowserGym commands to run
         - AgentDelegateAction(agent, inputs) - delegate action for (sub)task
         - MessageAction(content) - Message action to run (e.g. ask for clarification)
         - AgentFinishAction() - end the interaction
@@ -227,6 +234,7 @@ class CodeActAgent(Agent):
                 '</execute_ipython>',
                 '</execute_bash>',
                 '</execute_browse>',
+                '</execute_delegate>',
             ],
             temperature=0.0,
         )

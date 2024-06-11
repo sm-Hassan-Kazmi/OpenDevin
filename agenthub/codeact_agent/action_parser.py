@@ -5,6 +5,7 @@ from opendevin.events.action import (
     Action,
     AgentDelegateAction,
     AgentFinishAction,
+    BrowseInteractiveAction,
     CmdRunAction,
     IPythonRunCellAction,
     MessageAction,
@@ -16,6 +17,7 @@ class CodeActResponseParser(ResponseParser):
     Parser action:
         - CmdRunAction(command) - bash command to run
         - IPythonRunCellAction(code) - IPython code to run
+        - BrowseInteractiveAction - BrowserGym commands to run
         - AgentDelegateAction(agent, inputs) - delegate action for (sub)task
         - MessageAction(content) - Message action to run (e.g. ask for clarification)
         - AgentFinishAction() - end the interaction
@@ -29,6 +31,7 @@ class CodeActResponseParser(ResponseParser):
             CodeActActionParserFinish(),
             CodeActActionParserCmdRun(),
             CodeActActionParserIPythonRunCell(),
+            CodeActActionParserBrowse(),
             CodeActActionParserAgentDelegate(),
         ]
         self.default_parser = CodeActActionParserMessage()
@@ -39,7 +42,7 @@ class CodeActResponseParser(ResponseParser):
 
     def parse_response(self, response) -> str:
         action = response.choices[0].message.content
-        for lang in ['bash', 'ipython', 'browse']:
+        for lang in ['bash', 'ipython', 'browse', 'delegate']:
             if f'<execute_{lang}>' in action and f'</execute_{lang}>' not in action:
                 action += f'</execute_{lang}>'
         return action
@@ -135,6 +138,32 @@ class CodeActActionParserIPythonRunCell(ActionParser):
         )
 
 
+class CodeActActionParserBrowse(ActionParser):
+    """
+    Parser action:
+        - BrowseInteractiveAction(browsergym_command)
+    """
+
+    def __init__(
+        self,
+    ):
+        self.browse_command = None
+
+    def check_condition(self, action_str: str) -> bool:
+        self.browse_command = re.search(
+            r'<execute_browse>(.*)</execute_browse>', action_str, re.DOTALL
+        )
+        return self.browse_command is not None
+
+    def parse(self, action_str: str) -> Action:
+        assert (
+            self.browse_command is not None
+        ), 'self.browse_command should not be None when parse is called'
+        browse_actions = self.browse_command.group(1).strip()
+        thought = action_str.replace(self.browse_command.group(0), '').strip()
+        return BrowseInteractiveAction(browser_actions=browse_actions, thought=thought)
+
+
 class CodeActActionParserAgentDelegate(ActionParser):
     """
     Parser action:
@@ -144,22 +173,31 @@ class CodeActActionParserAgentDelegate(ActionParser):
     def __init__(
         self,
     ):
-        self.agent_delegate = None
+        self.delegate_command = None
 
     def check_condition(self, action_str: str) -> bool:
-        self.agent_delegate = re.search(
-            r'<execute_browse>(.*)</execute_browse>', action_str, re.DOTALL
+        self.delegate_command = re.search(
+            r'<execute_delegate>(.*)</execute_delegate>', action_str, re.DOTALL
         )
-        return self.agent_delegate is not None
+        return self.delegate_command is not None
 
     def parse(self, action_str: str) -> Action:
         assert (
-            self.agent_delegate is not None
-        ), 'self.agent_delegate should not be None when parse is called'
-        thought = action_str.replace(self.agent_delegate.group(0), '').strip()
-        browse_actions = self.agent_delegate.group(1).strip()
-        task = f'{thought}. I should start with: {browse_actions}'
-        return AgentDelegateAction(agent='BrowsingAgent', inputs={'task': task})
+            self.delegate_command is not None
+        ), 'self.delegate_command should not be None when parse is called'
+        thought = action_str.replace(self.delegate_command.group(0), '').strip()
+        delegate_action = self.delegate_command.group(1).strip()
+        if '(' in delegate_action and ')' in delegate_action:
+            agent_match = re.search(r'(\w+)\(', delegate_action)
+            if agent_match:
+                agent = agent_match.group(1)
+            task_match = re.search(r"\('([^']+)'\)", delegate_action)
+            if task_match:
+                task = task_match.group(1)
+        else:
+            agent = delegate_action
+            task = thought
+        return AgentDelegateAction(agent=agent, inputs={'task': task}, thought=thought)
 
 
 class CodeActActionParserMessage(ActionParser):
