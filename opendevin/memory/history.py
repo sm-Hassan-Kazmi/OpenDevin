@@ -86,6 +86,18 @@ class ShortTermHistory(list[Event]):
                 )
                 summary_action = self.summaries[(chunk_start, chunk_end)]
                 yield summary_action
+            elif event.id in [
+                delegate_start for delegate_start, _ in self.delegate_summaries.keys()
+            ]:
+                delegate_start, delegate_end = next(
+                    (delegate_start, delegate_end)
+                    for delegate_start, delegate_end in self.delegate_summaries.keys()
+                    if delegate_start == event.id
+                )
+                delegate_summary_action = self.delegate_summaries[
+                    (delegate_start, delegate_end)
+                ]
+                yield delegate_summary_action
             elif not any(
                 # we will yeild only events that are not part of a summary
                 chunk_start <= event.id <= chunk_end
@@ -93,7 +105,7 @@ class ShortTermHistory(list[Event]):
             ) and not any(
                 # nor part of delegate events
                 # except for the delegate action and observation themselves
-                delegate_start < event.id < delegate_end
+                delegate_start <= event.id <= delegate_end
                 for delegate_start, delegate_end in self.delegate_summaries.keys()
             ):
                 yield event
