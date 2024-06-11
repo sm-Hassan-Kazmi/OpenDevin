@@ -24,6 +24,7 @@ from opendevin.events.action import (
     IPythonRunCellAction,
     MessageAction,
 )
+from opendevin.events.action.agent import AgentDelegateSummaryAction
 from opendevin.events.observation import (
     AgentDelegateObservation,
     BrowserOutputObservation,
@@ -52,7 +53,10 @@ def action_to_str(action: Action) -> str:
     elif isinstance(action, MessageAction):
         return action.content
     elif isinstance(action, AgentSummarizeAction):
-        return f'Agent made actions like {action.summarized_actions} with the result: {action.summary}'
+        return f'You made actions like {action.summarized_actions} with the result: {action.summary}'
+    elif isinstance(action, AgentDelegateSummaryAction):
+        relevant_info_str = '\n'.join(info for info in action.relevant_info)
+        return f'You delegated to {action.agent} for task: {action.task}. \nThe result was: {action.summary}. \n{relevant_info_str}'
     return ''
 
 
@@ -63,6 +67,7 @@ def get_action_message(action: Action) -> dict[str, str] | None:
         or isinstance(action, IPythonRunCellAction)
         or isinstance(action, MessageAction)
         or isinstance(action, AgentSummarizeAction)
+        or isinstance(action, AgentDelegateSummaryAction)
     ):
         return {
             'role': 'user' if action.source == 'user' else 'assistant',
@@ -255,7 +260,7 @@ class CodeActAgent(Agent):
             },
         ]
 
-        for event in self.history.get_events():
+        for event in state.history.get_events():
             message = (
                 get_action_message(event)
                 if isinstance(event, Action)
@@ -263,8 +268,6 @@ class CodeActAgent(Agent):
             )
             if message:
                 messages.append(message)
-
-
 
         latest_user_message = next(
             (m for m in reversed(messages) if m['role'] == 'user'), None

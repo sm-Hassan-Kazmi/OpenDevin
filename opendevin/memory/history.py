@@ -19,7 +19,6 @@ from opendevin.events.observation.observation import Observation
 from opendevin.events.serialization.event import event_to_dict
 from opendevin.events.stream import EventStream
 from opendevin.llm.llm import LLM
-from opendevin.memory.condenser import MemoryCondenser
 
 
 class ShortTermHistory(list[Event]):
@@ -30,7 +29,6 @@ class ShortTermHistory(list[Event]):
     start_id: int
     end_id: int
     _event_stream: EventStream
-    memory_condenser: MemoryCondenser
     summaries: dict[tuple[int, int], AgentSummarizeAction]
     delegate_summaries: dict[tuple[int, int], AgentDelegateSummaryAction]
 
@@ -41,16 +39,20 @@ class ShortTermHistory(list[Event]):
         AgentStateChangedObservation,
     )
 
-    def __init__(self, llm: LLM):
+    def __init__(self):
         super().__init__()
         self.start_id = -1
         self.end_id = -1
         self.summaries = {}
         self.delegate_summaries = {}
-        self.memory_condenser = MemoryCondenser(llm)
 
     def set_event_stream(self, event_stream: EventStream):
         self._event_stream = event_stream
+
+    def init_memory_condenser(self, llm: LLM):
+        from opendevin.memory.condenser import MemoryCondenser
+
+        self.memory_condenser = MemoryCondenser(llm)
 
     def get_events_as_list(self) -> list[Event]:
         """
@@ -84,6 +86,18 @@ class ShortTermHistory(list[Event]):
                 )
                 summary_action = self.summaries[(chunk_start, chunk_end)]
                 yield summary_action
+            elif event.id in [
+                delegate_start for delegate_start, _ in self.delegate_summaries.keys()
+            ]:
+                delegate_start, delegate_end = next(
+                    (delegate_start, delegate_end)
+                    for delegate_start, delegate_end in self.delegate_summaries.keys()
+                    if delegate_start == event.id
+                )
+                delegate_summary_action = self.delegate_summaries[
+                    (delegate_start, delegate_end)
+                ]
+                yield delegate_summary_action
             elif not any(
                 # we will yeild only events that are not part of a summary
                 chunk_start <= event.id <= chunk_end
@@ -91,7 +105,7 @@ class ShortTermHistory(list[Event]):
             ) and not any(
                 # nor part of delegate events
                 # except for the delegate action and observation themselves
-                delegate_start < event.id < delegate_end
+                delegate_start <= event.id <= delegate_end
                 for delegate_start, delegate_end in self.delegate_summaries.keys()
             ):
                 yield event

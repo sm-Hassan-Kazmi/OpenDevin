@@ -143,7 +143,6 @@ class AgentController:
             await asyncio.sleep(0.1)
 
     async def on_event(self, event: Event):
-        logger.debug(f'AgentController on_event: {event}')
         if isinstance(event, ChangeAgentStateAction):
             await self.set_agent_state_to(event.agent_state)  # type: ignore
         elif isinstance(event, MessageAction):
@@ -327,10 +326,11 @@ class AgentController:
 
         # initialize short term memory
         history = (
-            ShortTermHistory(llm=self.agent.llm)
+            ShortTermHistory()
             if state is None or not hasattr(state, 'history') or state.history is None
             else state.history
         )
+        history.init_memory_condenser(self.agent.llm)
         history.set_event_stream(self.event_stream)
 
         # if start_id was not set in State, we're starting fresh, at the top of the stream
