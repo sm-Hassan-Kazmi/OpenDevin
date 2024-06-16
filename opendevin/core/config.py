@@ -123,6 +123,56 @@ class AgentConfig(metaclass=Singleton):
         return dict
 
 
+@dataclass
+class SandboxConfig(metaclass=Singleton):
+    """
+    Configuration for the sandbox.
+
+    Attributes:
+        type: The type of sandbox to use. Options are: ssh, exec, e2b, local.
+        container_image: The container image to use for the sandbox.
+        user_id: The user ID for the sandbox.
+        timeout: The timeout for the sandbox.
+        initialize_plugins: Whether to initialize the plugins.
+        fast_boot: Whether to fast boot the sandbox.
+
+
+    """
+
+    type: str = 'ssh'
+    container_image: str = 'ghcr.io/opendevin/sandbox' + (
+        f':{os.getenv("OPEN_DEVIN_BUILD_VERSION")}'
+        if os.getenv('OPEN_DEVIN_BUILD_VERSION')
+        else ':main'
+    )
+    user_id: int = os.getuid() if hasattr(os, 'getuid') else 1000
+    timeout: int = 120
+    initialize_plugins: bool = True
+    fast_boot: bool = False
+
+    def defaults_to_dict(self) -> dict:
+        """
+        Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional.
+        """
+        dict = {}
+        for f in fields(self):
+            dict[f.name] = get_field_info(f)
+        return dict
+
+    def __str__(self):
+        attr_str = []
+        for f in fields(self):
+            attr_name = f.name
+            attr_value = getattr(self, f.name)
+
+            attr_str.append(f'{attr_name}={repr(attr_value)}')
+
+        return f"SandboxConfig({', '.join(attr_str)})"
+
+    def __repr__(self):
+        return self.__str__()
+
+
 class UndefinedString(str, Enum):
     UNDEFINED = 'UNDEFINED'
 
@@ -135,6 +185,7 @@ class AppConfig(metaclass=Singleton):
     Attributes:
         llm: The LLM configuration.
         agent: The agent configuration.
+        sandbox: The sandbox configuration.
         runtime: The runtime environment.
         file_store: The file store to use.
         file_store_path: The path to the file store.
@@ -143,23 +194,20 @@ class AppConfig(metaclass=Singleton):
         workspace_mount_path_in_sandbox: The path to mount the workspace in the sandbox. Defaults to /workspace.
         workspace_mount_rewrite: The path to rewrite the workspace mount path to.
         cache_dir: The path to the cache directory. Defaults to /tmp/cache.
-        sandbox_container_image: The container image to use for the sandbox.
         run_as_devin: Whether to run as devin.
         max_iterations: The maximum number of iterations.
         max_budget_per_task: The maximum budget allowed per task, beyond which the agent will stop.
         e2b_api_key: The E2B API key.
-        sandbox_type: The type of sandbox to use. Options are: ssh, exec, e2b, local.
         use_host_network: Whether to use the host network.
         ssh_hostname: The SSH hostname.
         disable_color: Whether to disable color. For terminals that don't support color.
-        sandbox_user_id: The user ID for the sandbox.
-        sandbox_timeout: The timeout for the sandbox.
         debug: Whether to enable debugging.
         enable_auto_lint: Whether to enable auto linting. This is False by default, for regular runs of the app. For evaluation, please set this to True.
     """
 
     llm: LLMConfig = field(default_factory=LLMConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     runtime: str = 'server'
     file_store: str = 'memory'
     file_store_path: str = '/tmp/file_store'
@@ -170,22 +218,13 @@ class AppConfig(metaclass=Singleton):
     workspace_mount_path_in_sandbox: str = '/workspace'
     workspace_mount_rewrite: str | None = None
     cache_dir: str = '/tmp/cache'
-    sandbox_container_image: str = 'ghcr.io/opendevin/sandbox' + (
-        f':{os.getenv("OPEN_DEVIN_BUILD_VERSION")}'
-        if os.getenv('OPEN_DEVIN_BUILD_VERSION')
-        else ':main'
-    )
     run_as_devin: bool = True
     max_iterations: int = 100
     max_budget_per_task: float | None = None
     e2b_api_key: str = ''
-    sandbox_type: str = 'ssh'  # Can be 'ssh', 'exec', or 'e2b'
     use_host_network: bool = False
     ssh_hostname: str = 'localhost'
     disable_color: bool = False
-    sandbox_user_id: int = os.getuid() if hasattr(os, 'getuid') else 1000
-    sandbox_timeout: int = 120
-    initialize_plugins: bool = True
     persist_sandbox: bool = False
     ssh_port: int = 63710
     ssh_password: str | None = None
@@ -366,8 +405,18 @@ def load_from_toml(config: AppConfig, toml_file: str = 'config.toml'):
         if 'agent' in toml_config:
             agent_config = AgentConfig(**toml_config['agent'])
 
+        # set sandbox config from the toml file
+        sandbox_config = config.sandbox
+        if 'sandbox' in toml_config:
+            sandbox_config = SandboxConfig(**toml_config['sandbox'])
+
         # update the config object with the new values
-        config = AppConfig(llm=llm_config, agent=agent_config, **core_config)
+        config = AppConfig(
+            llm=llm_config,
+            agent=agent_config,
+            sandbox=sandbox_config,
+            **core_config,
+        )
     except (TypeError, KeyError):
         logger.warning(
             'Cannot parse config from toml, toml values have not been applied.',
@@ -386,7 +435,7 @@ def finalize_config(config: AppConfig):
     config.workspace_base = os.path.abspath(config.workspace_base)
 
     # In local there is no sandbox, the workspace will have the same pwd as the host
-    if config.sandbox_type == 'local':
+    if config.sandbox.type == 'local':
         config.workspace_mount_path_in_sandbox = config.workspace_mount_path
 
     if config.workspace_mount_rewrite:  # and not config.workspace_mount_path:

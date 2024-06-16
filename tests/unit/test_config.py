@@ -51,6 +51,7 @@ def test_compat_env_to_config(monkeypatch, setup_env):
     monkeypatch.setenv('AGENT_MEMORY_MAX_THREADS', '4')
     monkeypatch.setenv('AGENT_MEMORY_ENABLED', 'True')
     monkeypatch.setenv('AGENT', 'CodeActAgent')
+    monkeypatch.setenv('SANDBOX_TYPE', 'local')
 
     config = AppConfig()
     load_from_env(config, os.environ)
@@ -62,6 +63,9 @@ def test_compat_env_to_config(monkeypatch, setup_env):
     assert isinstance(config.agent, AgentConfig)
     assert isinstance(config.agent.memory_max_threads, int)
     assert config.agent.memory_max_threads == 4
+    assert config.agent.memory_enabled is True
+    assert config.agent.name == 'CodeActAgent'
+    assert config.sandbox.type == 'local'
 
 
 def test_load_from_old_style_env(monkeypatch, default_config):
@@ -160,7 +164,7 @@ disable_color = true
     assert default_config.workspace_mount_path is UndefinedString.UNDEFINED
     assert default_config.workspace_mount_path == 'UNDEFINED'
 
-    assert default_config.sandbox_type == 'ssh'
+    assert default_config.sandbox.type == 'ssh'
     assert default_config.disable_color is True
 
     finalize_config(default_config)
@@ -210,7 +214,7 @@ def test_invalid_toml_format(monkeypatch, temp_toml_file, default_config):
 def test_finalize_config(default_config):
     # Test finalize config
     assert default_config.workspace_mount_path is UndefinedString.UNDEFINED
-    default_config.sandbox_type = 'local'
+    default_config.sandbox.type = 'local'
     finalize_config(default_config)
 
     assert (
@@ -233,7 +237,7 @@ def test_workspace_mount_path_default(default_config):
 
 def test_workspace_mount_path_in_sandbox_local(default_config):
     assert default_config.workspace_mount_path_in_sandbox == '/workspace'
-    default_config.sandbox_type = 'local'
+    default_config.sandbox.type = 'local'
     finalize_config(default_config)
     assert (
         default_config.workspace_mount_path_in_sandbox
