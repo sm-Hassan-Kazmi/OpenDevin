@@ -62,6 +62,7 @@ class LLM:
         llm_config=None,
         metrics=None,
         cost_metric_supported=True,
+        llm_drop_params=None,
     ):
         """
         Initializes the LLM. If LLMConfig is passed, its values will be the fallback.
@@ -83,6 +84,7 @@ class LLM:
             llm_temperature (float, optional): The temperature for LLM sampling. Defaults to LLM_TEMPERATURE.
             metrics (Metrics, optional): The metrics object to use. Defaults to None.
             cost_metric_supported (bool, optional): Whether the cost metric is supported. Defaults to True.
+            llm_drop_params (bool, optional): Drop any unmapped (unsupported) params without exception. Defaults to LLM_DROP_PARAMS.
         """
         if llm_config is None:
             llm_config = config.llm
@@ -102,6 +104,9 @@ class LLM:
             llm_temperature if llm_temperature is not None else llm_config.temperature
         )
         llm_top_p = llm_top_p if llm_top_p is not None else llm_config.top_p
+        llm_drop_params = (
+            llm_drop_params if llm_drop_params is not None else llm_config.drop_params
+        )
         custom_llm_provider = (
             custom_llm_provider
             if custom_llm_provider is not None
@@ -134,10 +139,10 @@ class LLM:
         # litellm actually uses base Exception here for unknown model
         self.model_info = None
         try:
-            if not self.model_name.startswith('openrouter'):
-                self.model_info = litellm.get_model_info(self.model_name.split(':')[0])
-            else:
+            if self.model_name.startswith('openrouter'):
                 self.model_info = litellm.get_model_info(self.model_name)
+            else:
+                self.model_info = litellm.get_model_info(self.model_name.split(':')[0])
         # noinspection PyBroadException
         except Exception:
             logger.warning(f'Could not get model info for {self.model_name}')
@@ -168,6 +173,7 @@ class LLM:
             timeout=self.llm_timeout,
             temperature=llm_temperature,
             top_p=llm_top_p,
+            drop_params=llm_drop_params,
         )
 
         completion_unwrapped = self._completion
