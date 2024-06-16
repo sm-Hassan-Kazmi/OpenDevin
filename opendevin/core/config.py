@@ -145,6 +145,7 @@ class AppConfig(metaclass=Singleton):
         cache_dir: The path to the cache directory. Defaults to /tmp/cache.
         sandbox_container_image: The container image to use for the sandbox.
         run_as_devin: Whether to run as devin.
+        max_iterations_per_task: The maximum number of iterations per task.
         max_iterations: The maximum number of iterations.
         max_budget_per_task: The maximum budget allowed per task, beyond which the agent will stop.
         e2b_api_key: The E2B API key.
@@ -176,7 +177,9 @@ class AppConfig(metaclass=Singleton):
         else ':main'
     )
     run_as_devin: bool = True
-    max_iterations: int = 100
+    max_iterations_per_task: int = 100
+    max_iterations: int = 1000
+    global_max_iterations: int = 1000
     max_budget_per_task: float | None = None
     e2b_api_key: str = ''
     sandbox_type: str = 'ssh'  # Can be 'ssh', 'exec', or 'e2b'
@@ -201,6 +204,11 @@ class AppConfig(metaclass=Singleton):
         """
         Post-initialization hook, called when the instance is created with only default values.
         """
+        # Ensure the max_iterations are set based on configuration if not explicitly set
+        if self.max_iterations == 100:  
+            self.max_iterations = config.global_max_iterations
+        if self.max_iterations_per_task == 100:  
+            self.max_iterations_per_task = config.max_iterations_per_task
         AppConfig.defaults_dict = self.defaults_to_dict()
 
     def defaults_to_dict(self) -> dict:
@@ -499,6 +507,13 @@ def get_parser():
         help='The (litellm) model name to use',
     )
     parser.add_argument(
+        '-g',
+        '--max-iterations-per-task',
+        default=config.max_iterations_per_task,
+        type=int,
+        help='The maximum number of iterations per task to run the agent',
+    )
+    parser.add_argument(
         '-i',
         '--max-iterations',
         default=config.max_iterations,
@@ -563,6 +578,10 @@ def parse_arguments():
     if args.directory:
         config.workspace_base = os.path.abspath(args.directory)
         print(f'Setting workspace base to {config.workspace_base}')
+
+    if args.max_iterations_per_task:
+        config.max_iterations_per_task = args.max_iterations_per_task
+
     return args
 
 

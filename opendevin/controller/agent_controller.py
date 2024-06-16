@@ -80,7 +80,12 @@ class AgentController:
         self.agent = agent
         self.max_chars = max_chars
         if initial_state is None:
-            self.state = State(inputs={}, max_iterations=max_iterations)
+            self.state = State(
+                inputs={},
+                max_iterations=max_iterations,
+                max_iterations_per_task=config.max_iterations_per_task,
+                global_iteration=0,
+            )
         else:
             self.state = initial_state
         self.event_stream = event_stream
@@ -99,6 +104,7 @@ class AgentController:
 
     def update_state_before_step(self):
         self.state.iteration += 1
+        self.state.global_iteration += 1
 
     async def update_state_after_step(self):
         self.state.updated_info = []
@@ -213,16 +219,21 @@ class AgentController:
         state = State(
             inputs=action.inputs or {},
             iteration=0,
-            max_iterations=self.state.max_iterations,
+            max_iterations=min(
+                self.state.max_iterations, 
+                config.global_max_iterations - self.state.global_iteration
+            ),
+            max_iterations_per_task=self.state.max_iterations_per_task,
             num_of_chars=self.state.num_of_chars,
             delegate_level=self.state.delegate_level + 1,
+            global_iteration=self.state.global_iteration,
         )
         logger.info(f'[Agent Controller {self.id}]: start delegate')
         self.delegate = AgentController(
             sid=self.id + '-delegate',
             agent=agent,
             event_stream=self.event_stream,
-            max_iterations=self.state.max_iterations,
+            max_iterations=state.max_iterations,
             max_chars=self.max_chars,
             initial_state=state,
             is_delegate=True,
@@ -283,7 +294,8 @@ class AgentController:
             f'{type(self.agent).__name__} LEVEL {self.state.delegate_level} STEP {self.state.iteration}',
             extra={'msg_type': 'STEP'},
         )
-        if self.state.iteration >= self.state.max_iterations:
+        if (self.state.iteration >= self.state.max_iterations or
+            self.state.global_iteration >= config.global_max_iterations):
             await self.report_error('Agent reached maximum number of iterations')
             await self.set_agent_state_to(AgentState.ERROR)
             return

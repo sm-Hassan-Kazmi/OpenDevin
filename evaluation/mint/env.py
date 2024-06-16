@@ -16,7 +16,13 @@ class SimplifiedEnv:
         'For example: The answer to the question is <solution> 42 </solution>. \n'
     )
 
-    def __init__(self, agent_state: State, task: Task, task_config: Dict[str, int]):
+    def __init__(
+        self,
+        agent_state: State,
+        task: Task,
+        task_config: Dict[str, int],
+        max_iterations_per_task: int,
+    ):
         self.agent_state = agent_state
         self.task = task
 
@@ -34,6 +40,7 @@ class SimplifiedEnv:
         self.task_state = TaskState(agent_action_count=agent_action_count)
 
         self.task_config = task_config
+        self.max_iterations_per_task = max_iterations_per_task
 
     def step(self, lm_message: str):
         observation = self.handle_propose_solution(lm_message)
@@ -41,7 +48,7 @@ class SimplifiedEnv:
         self.check_max_iteration()
 
         turn_info = (
-            self.task_config['max_iterations'] - self.agent_state.iteration,
+            self.get_effective_max_iterations() - self.agent_state.iteration,
             self.task_config['max_propose_solution']
             - self.task_state.agent_action_count['propose_solution'],
         )
@@ -117,6 +124,8 @@ class SimplifiedEnv:
             # ignore if the episode is already finished (e.g., task success)
             return
 
+        effective_max_iterations = self.get_effective_max_iterations()
+
         if (
             # propose solution > max output solution
             self.task_state.agent_action_count['propose_solution']
@@ -125,7 +134,17 @@ class SimplifiedEnv:
             self.task_state.finished = True
             self.task_state.success = False
             self.task_state.terminate_reason = 'max_propose_steps'
+        elif (
+            # (propose_solution + use_tool) > max iteration limit
+            sum(self.task_state.agent_action_count.values()) >= effective_max_iterations
+        ):
+            self.task_state.finished = True
+            self.task_state.success = False
+            self.task_state.terminate_reason = 'max_iterations'
         elif self.agent_state.iteration >= self.task_config['max_iterations']:
             self.task_state.finished = True
             self.task_state.success = False
             self.task_state.terminate_reason = 'max_iterations'
+
+    def get_effective_max_iterations(self):
+        return min(self.task_config['max_iterations'], self.max_iterations_per_task)

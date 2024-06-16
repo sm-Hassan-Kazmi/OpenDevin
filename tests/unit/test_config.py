@@ -51,6 +51,7 @@ def test_compat_env_to_config(monkeypatch, setup_env):
     monkeypatch.setenv('AGENT_MEMORY_MAX_THREADS', '4')
     monkeypatch.setenv('AGENT_MEMORY_ENABLED', 'True')
     monkeypatch.setenv('AGENT', 'CodeActAgent')
+    monkeypatch.setenv('MAX_ITERATIONS_PER_TASK', '50')
 
     config = AppConfig()
     load_from_env(config, os.environ)
@@ -62,6 +63,7 @@ def test_compat_env_to_config(monkeypatch, setup_env):
     assert isinstance(config.agent, AgentConfig)
     assert isinstance(config.agent.memory_max_threads, int)
     assert config.agent.memory_max_threads == 4
+    assert config.max_iterations_per_task == 50
 
 
 def test_load_from_old_style_env(monkeypatch, default_config):
@@ -99,6 +101,7 @@ memory_enabled = true
 
 [core]
 workspace_base = "/opt/files2/workspace"
+max_iterations_per_task = 150
 """)
 
     load_from_toml(default_config, temp_toml_file)
@@ -108,6 +111,7 @@ workspace_base = "/opt/files2/workspace"
     assert default_config.agent.name == 'TestAgent'
     assert default_config.agent.memory_enabled is True
     assert default_config.workspace_base == '/opt/files2/workspace'
+    assert default_config.max_iterations_per_task == 150
 
     # before finalize_config, workspace_mount_path is UndefinedString.UNDEFINED if it was not set
     assert default_config.workspace_mount_path is UndefinedString.UNDEFINED
@@ -135,11 +139,13 @@ api_key = "toml-api-key"
 workspace_base = "/opt/files3/workspace"
 sandbox_type = "local"
 disable_color = true
+max_iterations_per_task = 75
 """)
 
     monkeypatch.setenv('LLM_API_KEY', 'env-api-key')
     monkeypatch.setenv('WORKSPACE_BASE', 'UNDEFINED')
     monkeypatch.setenv('SANDBOX_TYPE', 'ssh')
+    monkeypatch.setenv('MAX_ITERATIONS_PER_TASK', '200')
 
     load_from_toml(default_config, temp_toml_file)
 
@@ -162,6 +168,7 @@ disable_color = true
 
     assert default_config.sandbox_type == 'ssh'
     assert default_config.disable_color is True
+    assert default_config.max_iterations_per_task == 200
 
     finalize_config(default_config)
     # after finalize_config, workspace_mount_path is set to absolute path of workspace_base if it was undefined
@@ -339,6 +346,7 @@ def test_max_iterations_and_max_budget_per_task_from_toml(temp_toml_file):
     temp_toml = """
 [core]
 max_iterations = 100
+max_iterations_per_task = 75
 max_budget_per_task = 4.0
 """
 
@@ -349,4 +357,5 @@ max_budget_per_task = 4.0
     load_from_toml(config, temp_toml_file)
 
     assert config.max_iterations == 100
+    assert config.max_iterations_per_task == 75
     assert config.max_budget_per_task == 4.0

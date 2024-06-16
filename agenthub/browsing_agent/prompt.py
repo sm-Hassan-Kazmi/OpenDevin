@@ -64,7 +64,7 @@ class Flags:
 
         if not isinstance(flags_dict, dict):
             raise ValueError(
-                f'Unregcognized type for flags_dict of type {type(flags_dict)}.'
+                f'Unrecognized type for flags_dict of type {type(flags_dict)}.'
             )
         return Flags(**flags_dict)
 

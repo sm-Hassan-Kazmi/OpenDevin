@@ -85,9 +85,12 @@ async def main(
     agent = AgentCls(llm=llm)
 
     event_stream = EventStream('main')
+
+    max_iterations = args.max_iterations
+
     controller = AgentController(
         agent=agent,
-        max_iterations=args.max_iterations,
+        max_iterations=max_iterations,
         max_budget_per_task=args.max_budget_per_task,
         max_chars=args.max_chars,
         event_stream=event_stream,
