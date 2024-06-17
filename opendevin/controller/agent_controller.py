@@ -35,7 +35,6 @@ from opendevin.events.observation import (
     NullObservation,
     Observation,
 )
-from opendevin.memory.history import ShortTermHistory
 
 MAX_ITERATIONS = config.max_iterations
 MAX_CHARS = config.llm.max_chars
@@ -319,19 +318,19 @@ class AgentController:
         state: State | None = None,
         max_iterations: int = MAX_ITERATIONS,
     ):
+        # state from the previous session, state from a parent agent, or a new state
+        # note that this is called twice when restoring a previous session, first with state=None
         if state is None:
             self.state = State(inputs={}, max_iterations=max_iterations)
         else:
             self.state = state
 
-        # initialize short term memory
-        history = (
-            ShortTermHistory()
-            if state is None or not hasattr(state, 'history') or state.history is None
-            else state.history
-        )
-        history.init_memory_condenser(self.agent.llm)
-        history.set_event_stream(self.event_stream)
+        # when restored from a previous session, the State object will have history, start_id, and end_id
+        # connect it to the event stream
+        self.state.history.set_event_stream(self.event_stream)
+
+        # init the memory condenser
+        self.state.history.init_memory_condenser(self.agent.llm)
 
         # if start_id was not set in State, we're starting fresh, at the top of the stream
         start_id = self.state.start_id
@@ -339,9 +338,15 @@ class AgentController:
             start_id = self.event_stream.get_latest_event_id() + 1
         else:
             logger.debug(f'AgentController {self.id} restoring from event {start_id}')
+
+        # make sure history is in sync
         self.state.start_id = start_id
-        history.start_id = start_id
-        self.state.history = history
+        self.state.history.start_id = start_id
+
+        # if there was an end_id saved in State, set it in history
+        # currently used only for delegates internally in history
+        if self.state.end_id > -1:
+            self.state.history.end_id = self.state.end_id
 
     def _is_stuck(self):
         # check if delegate stuck
@@ -361,7 +366,11 @@ class AgentController:
             )
         ]
 
-        # check if the last four actions or observations are too repetitive
+        # scenario 1: same action, same observation
+        # it takes 3 actions and 3 observations to detect a loop
+        if len(filtered_history) < 3:
+            return False
+
         last_actions: list[Event] = []
         last_observations: list[Event] = []
         # retrieve the last four actions and observations starting from the end of history, wherever they are
@@ -374,22 +383,35 @@ class AgentController:
             if len(last_actions) == 4 and len(last_observations) == 4:
                 break
 
+        # are the last three actions the same?
+        last_three_actions = last_actions[-3:]
+        last_three_observations = last_observations[-3:]
+        if len(last_three_actions) == 3 and all(
+            self._eq_no_pid(last_three_actions[0], action)
+            for action in last_three_actions
+        ):
+            if len(last_three_observations) == 3 and all(
+                self._eq_no_pid(last_three_observations[0], observation)
+                for observation in last_three_observations
+            ):
+                logger.warning('Action, Observation loop detected')
+                return True
+
+        # scenario 2: same action, errors
+        # it takes 4 actions and 4 observations to detect a loop
+        # check if the last four actions are the same and result in errors
+        # retrieve the last four actions and observations starting from the end of history, wherever they are
+
         # are the last four actions the same?
         if len(last_actions) == 4 and all(
             self._eq_no_pid(last_actions[0], action) for action in last_actions
         ):
-            # and the last four observations the same?
-            if len(last_observations) == 4 and all(
-                self._eq_no_pid(last_observations[0], observation)
-                for observation in last_observations
-            ):
-                logger.warning('Action, Observation loop detected')
-                return True
-            # or, are the last four observations all errors?
-            elif all(isinstance(obs, ErrorObservation) for obs in last_observations):
+            # and the last four observations all errors?
+            if all(isinstance(obs, ErrorObservation) for obs in last_observations):
                 logger.warning('Action, ErrorObservation loop detected')
                 return True
 
+        # scenario 3: monologue
         # check for repeated MessageActions with source=AGENT
         # see if the agent is engaged in a good old monologue, telling itself the same thing over and over
         agent_message_actions = [
@@ -421,6 +443,7 @@ class AgentController:
                     logger.warning('Repeated MessageAction with source=AGENT detected')
                     return True
 
+        # scenario 4: action, observation pattern on the last six steps
         # check if the agent repeats the same (Action, Observation)
         # every other step in the last six steps
         last_six_actions: list[Event] = []

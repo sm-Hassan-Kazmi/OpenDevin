@@ -13,6 +13,7 @@ Given the following actions and observations, create a JSON response with:
     - args:
       - "summarized_actions": A comma-separated list of unique action names from the provided actions
       - "summary": A single sentence summarizing all the provided observations
+%(events)s
 """
 
 DELEGATE_SUMMARY_PROMPT = """

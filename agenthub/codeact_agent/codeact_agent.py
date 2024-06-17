@@ -53,7 +53,7 @@ def action_to_str(action: Action) -> str:
     elif isinstance(action, MessageAction):
         return action.content
     elif isinstance(action, AgentSummarizeAction):
-        return f'You made actions like {action.summarized_actions} with the result: {action.summary}'
+        return action.summary
     elif isinstance(action, AgentDelegateSummaryAction):
         relevant_info_str = '\n'.join(info for info in action.relevant_info)
         return f'You delegated to {action.agent} for task: {action.task}. \nThe result was: {action.summary}. \n{relevant_info_str}'
@@ -80,7 +80,7 @@ def get_observation_message(obs) -> dict[str, str] | None:
     if isinstance(obs, CmdOutputObservation):
         content = 'OBSERVATION:\n' + truncate_content(obs.content)
         content += (
-            f'\n[Command {obs.command_id} finished with exit code {obs.exit_code}]]'
+            f'\n[Command {obs.command_id} finished with exit code {obs.exit_code}]'
         )
         return {'role': 'user', 'content': content}
     elif isinstance(obs, IPythonRunCellObservation):
