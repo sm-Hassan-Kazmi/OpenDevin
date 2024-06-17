@@ -8,6 +8,8 @@ from agenthub.codeact_agent.prompt import (
 )
 from opendevin.controller.agent import Agent
 from opendevin.controller.state.state import State
+from opendevin.core.config import config
+from opendevin.core.logger import opendevin_logger as logger
 from opendevin.events.action import (
     Action,
     AgentFinishAction,
@@ -22,6 +24,7 @@ from opendevin.events.observation import (
     CmdOutputObservation,
     IPythonRunCellObservation,
 )
+from opendevin.indexing import RepoMap
 from opendevin.llm.llm import LLM
 from opendevin.runtime.plugins import (
     AgentSkillsRequirement,
@@ -31,6 +34,7 @@ from opendevin.runtime.plugins import (
 from opendevin.runtime.tools import RuntimeTool
 
 ENABLE_GITHUB = True
+ENABLE_REPOMAP = False
 
 
 def action_to_str(action: Action) -> str:
@@ -177,6 +181,17 @@ class CodeActAgent(Agent):
         """
         super().__init__(llm)
         self.reset()
+        self.repo_map = (
+            RepoMap(
+                llm=self.llm,
+                map_tokens=1024,
+                root=config.workspace_base,
+                repo_content_prefix='Here are summaries of some files present in the workspace.',
+                max_context_window=self.llm.max_input_tokens,
+            )
+            if ENABLE_REPOMAP
+            else None
+        )
 
     def reset(self) -> None:
         """
@@ -217,6 +232,19 @@ class CodeActAgent(Agent):
         if latest_user_message:
             if latest_user_message['content'].strip() == '/exit':
                 return AgentFinishAction()
+
+            # Insert optional repo_map message here
+            if ENABLE_REPOMAP:
+                repo_content = (
+                    self.repo_map.get_history_aware_repo_map(messages)
+                    if self.repo_map
+                    else ''
+                )
+                logger.info(f'Repo content: {repo_content}')
+                latest_user_message['content'] += (
+                    repo_content + '\n\n' if repo_content else ''
+                )
+
             latest_user_message['content'] += (
                 f'\n\nENVIRONMENT REMINDER: You have {state.max_iterations - state.iteration} turns left to complete the task.'
             )
