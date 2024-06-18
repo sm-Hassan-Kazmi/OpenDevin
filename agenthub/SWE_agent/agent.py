@@ -6,15 +6,17 @@ from opendevin.events.action import (
     FileWriteAction,
     MessageAction,
 )
+from opendevin.events.observation.observation import Observation
 from opendevin.events.serialization.event import event_to_memory
 from opendevin.llm.llm import LLM
 from opendevin.runtime.tools import RuntimeTool
 
 from .parser import parse_command
 from .prompts import (
+    ACTION_MEMORY_FORMAT,
     CONTEXT_PROMPT,
-    MEMORY_FORMAT,
     NO_ACTION,
+    OBSERVATION_MEMORY_FORMAT,
     STEP_PROMPT,
     SYSTEM_MESSAGE,
 )
@@ -32,13 +34,13 @@ class SWEAgent(Agent):
 
     def __init__(self, llm: LLM):
         super().__init__(llm)
-        self.memory_window = 4
+        self.memory_window = 8
         self.max_retries = 2
         self.cur_file: str = ''
         self.cur_line: int = 0
 
     def _think_act(self, messages: list[dict]) -> tuple[Action, str]:
-        resp = self.llm.do_completion(
+        resp = self.llm.completion(
             messages=messages,
             temperature=0.05,
         )
@@ -64,13 +66,22 @@ class SWEAgent(Agent):
             2. Perform think-act - prompt model for action and reasoning
             3. Catch errors - ensure model takes action (5 attempts max)
         """
+
         # retrieve short term memories from state.history, up to memory_window
-        memory_window = min(self.memory_window, len(state.history))
+        memory_window = min(self.memory_window, state.history.get_latest_event_id() + 1)
         running_memory: list[str] = []
-        for prev_action, obs in state.history[-memory_window:]:
-            running_memory.append(
-                MEMORY_FORMAT(event_to_memory(prev_action), event_to_memory(obs))
-            )
+
+        for event in state.history.get_events():
+            if isinstance(event, Action):
+                memory = ACTION_MEMORY_FORMAT(event_to_memory(event))
+                if memory:
+                    running_memory.append(memory)
+            elif isinstance(event, Observation):
+                memory = OBSERVATION_MEMORY_FORMAT(event_to_memory(event))
+                if memory:
+                    running_memory.append(memory)
+            if len(running_memory) >= memory_window:
+                break
 
         goal = state.get_current_user_intent()
 

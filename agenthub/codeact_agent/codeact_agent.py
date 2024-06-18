@@ -1,3 +1,5 @@
+from litellm.exceptions import ContextWindowExceededError
+
 from agenthub.codeact_agent.action_parser import CodeActResponseParser
 from agenthub.codeact_agent.prompt import (
     COMMAND_DOCS,
@@ -8,9 +10,15 @@ from agenthub.codeact_agent.prompt import (
 )
 from opendevin.controller.agent import Agent
 from opendevin.controller.state.state import State
+from opendevin.core.exceptions import (
+    ContextWindowLimitExceededError,
+    TokenLimitExceedError,
+)
+from opendevin.core.logger import opendevin_logger as logger
 from opendevin.events.action import (
     Action,
     AgentFinishAction,
+    AgentSummarizeAction,
     BrowseInteractiveAction,
     CmdRunAction,
     IPythonRunCellAction,
@@ -22,7 +30,9 @@ from opendevin.events.observation import (
     CmdOutputObservation,
     IPythonRunCellObservation,
 )
+from opendevin.events.serialization.event import truncate_content
 from opendevin.llm.llm import LLM
+from opendevin.memory.condenser import MemoryCondenser
 from opendevin.runtime.plugins import (
     AgentSkillsRequirement,
     JupyterRequirement,
@@ -42,6 +52,8 @@ def action_to_str(action: Action) -> str:
         return f'{action.thought}\n<execute_browse>\n{action.browser_actions}\n</execute_browse>'
     elif isinstance(action, MessageAction):
         return action.content
+    elif isinstance(action, AgentSummarizeAction):
+        return action.summary
     return ''
 
 
@@ -51,6 +63,7 @@ def get_action_message(action: Action) -> dict[str, str] | None:
         or isinstance(action, CmdRunAction)
         or isinstance(action, IPythonRunCellAction)
         or isinstance(action, MessageAction)
+        or isinstance(action, AgentSummarizeAction)
     ):
         return {
             'role': 'user' if action.source == 'user' else 'assistant',
@@ -61,7 +74,7 @@ def get_action_message(action: Action) -> dict[str, str] | None:
 
 def get_observation_message(obs) -> dict[str, str] | None:
     if isinstance(obs, CmdOutputObservation):
-        content = 'OBSERVATION:\n' + truncate_observation(obs.content)
+        content = 'OBSERVATION:\n' + truncate_content(obs.content)
         content += (
             f'\n[Command {obs.command_id} finished with exit code {obs.exit_code}]'
         )
@@ -76,29 +89,15 @@ def get_observation_message(obs) -> dict[str, str] | None:
                     '![image](data:image/png;base64, ...) already displayed to user'
                 )
         content = '\n'.join(splitted)
-        content = truncate_observation(content)
+        content = truncate_content(content)
         return {'role': 'user', 'content': content}
     elif isinstance(obs, BrowserOutputObservation):
-        content = 'OBSERVATION:\n' + truncate_observation(obs.content)
+        content = 'OBSERVATION:\n' + truncate_content(obs.content)
         return {'role': 'user', 'content': content}
     elif isinstance(obs, AgentDelegateObservation):
-        content = 'OBSERVATION:\n' + truncate_observation(str(obs.outputs))
+        content = 'OBSERVATION:\n' + truncate_content(str(obs.outputs))
         return {'role': 'user', 'content': content}
     return None
-
-
-def truncate_observation(observation: str, max_chars: int = 10_000) -> str:
-    """
-    Truncate the middle of the observation if it is too long.
-    """
-    if len(observation) <= max_chars:
-        return observation
-    half = max_chars // 2
-    return (
-        observation[:half]
-        + '\n[... Observation truncated due to length ...]\n'
-        + observation[-half:]
-    )
 
 
 # FIXME: We can tweak these two settings to create MicroAgents specialized toward different area
@@ -137,7 +136,6 @@ class CodeActAgent(Agent):
     To make the CodeAct agent more powerful with only access to `bash` action space, CodeAct agent leverages OpenDevin's plugin system:
     - [Jupyter plugin](https://github.com/OpenDevin/OpenDevin/tree/main/opendevin/runtime/plugins/jupyter): for IPython execution via bash command
     - [SWE-agent tool plugin](https://github.com/OpenDevin/OpenDevin/tree/main/opendevin/runtime/plugins/swe_agent_commands): Powerful bash command line tools for software development tasks introduced by [swe-agent](https://github.com/princeton-nlp/swe-agent).
-
     ### Demo
 
     https://github.com/OpenDevin/OpenDevin/assets/38853559/f592a192-e86c-4f48-ad31-d69282d5f6ac
@@ -169,13 +167,13 @@ class CodeActAgent(Agent):
         self,
         llm: LLM,
     ) -> None:
-        """
-        Initializes a new instance of the CodeActAgent class.
+        """Initializes a new instance of the CodeActAgent class.
 
         Parameters:
         - llm (LLM): The llm to be used by this agent
         """
         super().__init__(llm)
+        self.memory_condenser = MemoryCondenser(llm)
         self.reset()
 
     def reset(self) -> None:
@@ -186,11 +184,10 @@ class CodeActAgent(Agent):
 
     def step(self, state: State) -> Action:
         """
-        Performs one step using the CodeAct Agent.
-        This includes gathering info on previous steps and prompting the model to make a command to execute.
+        Run the agent for one step.
 
         Parameters:
-        - state (State): used to get updated info and background commands
+        - state: The current state of the environment.
 
         Returns:
         - CmdRunAction(command) - bash command to run
@@ -199,37 +196,50 @@ class CodeActAgent(Agent):
         - MessageAction(content) - Message action to run (e.g. ask for clarification)
         - AgentFinishAction() - end the interaction
         """
-        messages: list[dict[str, str]] = [
-            {'role': 'system', 'content': self.system_message},
-            {'role': 'user', 'content': self.in_context_example},
-        ]
+        logger.info(f'Running CodeActAgent v{self.VERSION}')
 
-        for prev_action, obs in state.history:
-            action_message = get_action_message(prev_action)
-            if action_message:
-                messages.append(action_message)
+        # if we're done, go back
+        latest_user_message = state.history.get_latest_user_message()
+        if latest_user_message and latest_user_message.strip() == '/exit':
+            return AgentFinishAction()
 
-            obs_message = get_observation_message(obs)
-            if obs_message:
-                messages.append(obs_message)
+        # prepare what we want to send to the LLM
+        messages: list[dict[str, str]] = self._get_messages(state)
 
-        latest_user_message = [m for m in messages if m['role'] == 'user'][-1]
-        if latest_user_message:
-            if latest_user_message['content'].strip() == '/exit':
-                return AgentFinishAction()
-            latest_user_message['content'] += (
-                f'\n\nENVIRONMENT REMINDER: You have {state.max_iterations - state.iteration} turns left to complete the task.'
+        response = None
+        # give it multiple chances to get a response
+        # if it fails, we'll try to condense memory
+        attempt = 0
+        while not response and attempt < 10:
+            try:
+                response = self.llm.completion(
+                    messages=messages,
+                    stop=[
+                        '</execute_ipython>',
+                        '</execute_bash>',
+                        '</execute_browse>',
+                    ],
+                    temperature=0.0,
+                )
+            except (ContextWindowExceededError, TokenLimitExceedError):
+                logger.warning(
+                    'Context window exceeded or token limit exceeded. Condensing memory, attempt %d',
+                    attempt,
+                )
+
+                # Retry processing events with condensed memory
+                summary_action = self.memory_condenser.condense(state.history)
+                attempt += 1
+                if summary_action:
+                    # update the messages, so we get the new summary
+                    messages = self._get_messages(state)
+                    continue
+
+        if not response:
+            raise ContextWindowLimitExceededError(
+                'Context window limit exceeded. Unable to condense memory.'
             )
 
-        response = self.llm.do_completion(
-            messages=messages,
-            stop=[
-                '</execute_ipython>',
-                '</execute_bash>',
-                '</execute_browse>',
-            ],
-            temperature=0.0,
-        )
         state.num_of_chars += sum(
             len(message['content']) for message in messages
         ) + len(response.choices[0].message.content)
@@ -237,3 +247,32 @@ class CodeActAgent(Agent):
 
     def search_memory(self, query: str) -> list[str]:
         raise NotImplementedError('Implement this abstract method')
+
+    def _get_messages(self, state: State) -> list[dict[str, str]]:
+        messages = [
+            {'role': 'system', 'content': self.system_message},
+            {
+                'role': 'user',
+                'content': self.in_context_example,
+            },
+        ]
+
+        for event in state.history.get_events():
+            message = (
+                get_action_message(event)
+                if isinstance(event, Action)
+                else get_observation_message(event)
+            )
+            if message:
+                messages.append(message)
+
+        latest_user_message = next(
+            (m for m in reversed(messages) if m['role'] == 'user'), None
+        )
+
+        if latest_user_message:
+            latest_user_message['content'] += (
+                f'\n\nENVIRONMENT REMINDER: You have {state.max_iterations - state.iteration} turns left to complete the task.'
+            )
+
+        return messages

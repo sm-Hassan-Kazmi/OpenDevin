@@ -1,6 +1,8 @@
 import warnings
 from functools import partial
 
+from opendevin.core.exceptions import TokenLimitExceedError
+
 with warnings.catch_warnings():
     warnings.simplefilter('ignore')
     import litellm
@@ -27,6 +29,7 @@ from opendevin.core.metrics import Metrics
 __all__ = ['LLM']
 
 message_separator = '\n\n----------\n\n'
+MAX_TOKEN_COUNT_PADDING = 512  # estimation of tokens to add to the prompt for the user-configured max token count
 
 
 class LLM:
@@ -189,17 +192,36 @@ class LLM:
             after=attempt_on_error,
         )
         def wrapper(*args, **kwargs):
+            """
+            Wrapper for the litellm completion function. Logs the input and output of the completion function.
+            """
+
+            # some callers might just send the messages directly
             if 'messages' in kwargs:
                 messages = kwargs['messages']
             else:
                 messages = args[1]
+
+            if self.is_over_token_limit(messages):
+                raise TokenLimitExceedError(
+                    f'Token count exceeds the maximum of {self.max_input_tokens}. Attempting to condense memory.'
+                )
+
+            # log the prompt
             debug_message = ''
             for message in messages:
                 debug_message += message_separator + message['content']
             llm_prompt_logger.debug(debug_message)
+
+            # call the completion function
             resp = completion_unwrapped(*args, **kwargs)
+
+            # log the response
             message_back = resp['choices'][0]['message']['content']
             llm_response_logger.debug(message_back)
+
+            # post-process to log costs
+            self._post_completion(resp)
             return resp
 
         self._completion = wrapper  # type: ignore
@@ -211,17 +233,7 @@ class LLM:
         """
         return self._completion
 
-    def do_completion(self, *args, **kwargs):
-        """
-        Wrapper for the litellm completion function.
-
-        Check the complete documentation at https://litellm.vercel.app/docs/completion
-        """
-        resp = self._completion(*args, **kwargs)
-        self.post_completion(resp)
-        return resp
-
-    def post_completion(self, response: str) -> None:
+    def _post_completion(self, response: str) -> None:
         """
         Post-process the completion response.
         """
@@ -236,17 +248,25 @@ class LLM:
                 self.metrics.accumulated_cost,
             )
 
-    def get_token_count(self, messages):
+    def is_over_token_limit(self, messages: list[dict]) -> bool:
         """
-        Get the number of tokens in a list of messages.
+        Estimates the token count of the given events using litellm tokenizer and returns True if over the max_input_tokens value.
 
-        Args:
-            messages (list): A list of messages.
+        Parameters:
+        - messages: List of messages to estimate the token count for.
 
         Returns:
-            int: The number of tokens.
+        - Estimated token count.
         """
-        return litellm.token_counter(model=self.model_name, messages=messages)
+        # max_input_tokens will always be set in init to some sensible default
+        # 0 in config.llm disables the check
+        if not self.max_input_tokens:
+            return False
+        token_count = (
+            litellm.token_counter(model=self.model_name, messages=messages)
+            + MAX_TOKEN_COUNT_PADDING
+        )
+        return token_count >= self.max_input_tokens
 
     def is_local(self):
         """

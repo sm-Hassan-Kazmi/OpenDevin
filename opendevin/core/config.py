@@ -40,10 +40,11 @@ class LLMConfig(metaclass=Singleton):
         retry_max_wait: The maximum time to wait between retries, in seconds. This is exponential backoff maximum.
         timeout: The timeout for the API.
         max_chars: The maximum number of characters to send to and receive from the API. This is a fallback for token counting, which doesn't work in all cases.
+        max_message_chars: The approximate number of characters in a message to the LLM. Larger observations are truncated.
         temperature: The temperature for the API.
         top_p: The top p for the API.
         custom_llm_provider: The custom LLM provider to use. This is undocumented in opendevin, and normally not used. It is documented on the litellm side.
-        max_input_tokens: The maximum number of input tokens. Note that this is currently unused, and the value at runtime is actually the total tokens in OpenAI (e.g. 128,000 tokens for GPT-4).
+        max_input_tokens: The maximum number of input tokens for each prompt. When hit, opendevin will start summarizing the history. 0 disables the check and no maximum will be enforced. Note that the default value at runtime is actually the total tokens in OpenAI (e.g. 128,000 tokens for GPT-4).
         max_output_tokens: The maximum number of output tokens. This is sent to the LLM.
         input_cost_per_token: The cost per input token. This will available in logs for the user to check.
         output_cost_per_token: The cost per output token. This will available in logs for the user to check.
@@ -64,6 +65,9 @@ class LLMConfig(metaclass=Singleton):
     retry_max_wait: int = 60
     timeout: int | None = None
     max_chars: int = 5_000_000  # fallback for token counting
+    max_message_chars: int = (
+        10000  # maximum number of characters in a message to the llm
+    )
     temperature: float = 0
     top_p: float = 0.5
     custom_llm_provider: str | None = None
@@ -194,6 +198,7 @@ class AppConfig(metaclass=Singleton):
     enable_auto_lint: bool = (
         False  # once enabled, OpenDevin would lint files after editing
     )
+    enable_main_session: bool = False
 
     defaults_dict: ClassVar[dict] = {}
 
