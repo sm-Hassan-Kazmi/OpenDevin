@@ -1,5 +1,3 @@
-from typing import Optional
-
 from agenthub.codeact_agent.codeact_agent import CodeActAgent
 from opendevin.controller import AgentController
 from opendevin.controller.agent import Agent
@@ -24,8 +22,8 @@ class AgentSession:
 
     sid: str
     event_stream: EventStream
-    controller: Optional[AgentController] = None
-    runtime: Optional[Runtime] = None
+    controller: AgentController | None = None
+    runtime: Runtime | None = None
     _closed: bool = False
 
     def __init__(self, sid):
@@ -113,7 +111,8 @@ class AgentSession:
         )
         try:
             agent_state = State.restore_from_session(self.sid)
-            self.controller.set_state(agent_state)
+            if agent_state is not None:
+                self.controller._set_initial_state(state=agent_state)
             logger.info(f'Restored agent state from session, sid: {self.sid}')
         except Exception as e:
-            print('Error restoring state', e)
+            logger.error(f'Error restoring state {str(e)}', exc_info=False)

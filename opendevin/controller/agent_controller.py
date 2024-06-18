@@ -6,9 +6,9 @@ from opendevin.controller.agent import Agent
 from opendevin.controller.state.state import State
 from opendevin.core.config import config
 from opendevin.core.exceptions import (
+    AgentLLMOutputError,
     AgentMalformedActionError,
     AgentNoActionError,
-    LLMOutputError,
     MaxCharsExceedError,
 )
 from opendevin.core.logger import opendevin_logger as logger
@@ -79,14 +79,18 @@ class AgentController:
         self.id = sid
         self.agent = agent
         self.max_chars = max_chars
-        if initial_state is None:
-            self.state = State(inputs={}, max_iterations=max_iterations)
-        else:
-            self.state = initial_state
+
         self.event_stream = event_stream
         self.event_stream.subscribe(
             EventStreamSubscriber.AGENT_CONTROLLER, self.on_event, append=is_delegate
         )
+
+        # state from the previous session, state from a parent agent, or a fresh state
+        self._set_initial_state(
+            state=initial_state,
+            max_iterations=max_iterations,
+        )
+
         self.max_budget_per_task = max_budget_per_task
         if not is_delegate:
             self.agent_task = asyncio.create_task(self._start_step_loop())
@@ -101,7 +105,6 @@ class AgentController:
         self.state.iteration += 1
 
     async def update_state_after_step(self):
-        self.state.updated_info = []
         # update metrics especially for cost
         self.state.metrics = self.agent.llm.metrics
         if self.max_budget_per_task is not None:
@@ -116,13 +119,7 @@ class AgentController:
         self.state.error = message
         if exception:
             self.state.error += f': {str(exception)}'
-        await self.event_stream.add_event(ErrorObservation(message), EventSource.AGENT)
-
-    async def add_history(self, action: Action, observation: Observation):
-        if isinstance(action, NullAction) and isinstance(observation, NullObservation):
-            return
-        self.state.history.append((action, observation))
-        self.state.updated_info.append((action, observation))
+        self.event_stream.add_event(ErrorObservation(message), EventSource.AGENT)
 
     async def _start_step_loop(self):
         logger.info(f'[Agent Controller {self.id}] Starting step loop...')
@@ -150,7 +147,6 @@ class AgentController:
         elif isinstance(event, MessageAction):
             if event.source == EventSource.USER:
                 logger.info(event, extra={'msg_type': 'OBSERVATION'})
-                await self.add_history(event, NullObservation(''))
                 if self.get_agent_state() != AgentState.RUNNING:
                     await self.set_agent_state_to(AgentState.RUNNING)
             elif event.source == EventSource.AGENT and event.wait_for_response:
@@ -170,21 +166,19 @@ class AgentController:
             await self.set_agent_state_to(AgentState.REJECTED)
         elif isinstance(event, Observation):
             if self._pending_action and self._pending_action.id == event.cause:
-                await self.add_history(self._pending_action, event)
                 self._pending_action = None
                 logger.info(event, extra={'msg_type': 'OBSERVATION'})
             elif isinstance(event, CmdOutputObservation):
-                await self.add_history(NullAction(), event)
                 logger.info(event, extra={'msg_type': 'OBSERVATION'})
             elif isinstance(event, AgentDelegateObservation):
-                await self.add_history(NullAction(), event)
                 logger.info(event, extra={'msg_type': 'OBSERVATION'})
+                self.state.history.on_event(event)
 
     def reset_task(self):
         self.agent.reset()
 
     async def set_agent_state_to(self, new_state: AgentState):
-        logger.info(
+        logger.debug(
             f'[Agent Controller {self.id}] Setting agent({type(self.agent).__name__}) state from {self.state.agent_state} to {new_state}'
         )
 
@@ -195,7 +189,10 @@ class AgentController:
         if new_state == AgentState.STOPPED or new_state == AgentState.ERROR:
             self.reset_task()
 
-        await self.event_stream.add_event(
+        if new_state != AgentState.ERROR:
+            self.state.error = None
+
+        self.event_stream.add_event(
             AgentStateChangedObservation('', self.state.agent_state), EventSource.AGENT
         )
 
@@ -230,13 +227,12 @@ class AgentController:
         await self.delegate.set_agent_state_to(AgentState.RUNNING)
 
     async def _step(self):
-        logger.debug(f'[Agent Controller {self.id}] Entering step method')
         if self.get_agent_state() != AgentState.RUNNING:
             await asyncio.sleep(1)
             return
 
         if self._pending_action:
-            logger.info(
+            logger.debug(
                 f'[Agent Controller {self.id}] waiting for pending action: {self._pending_action}'
             )
             await asyncio.sleep(1)
@@ -273,7 +269,7 @@ class AgentController:
 
                 # update delegate result observation
                 obs: Observation = AgentDelegateObservation(outputs=outputs, content='')
-                await self.event_stream.add_event(obs, EventSource.AGENT)
+                self.event_stream.add_event(obs, EventSource.AGENT)
             return
 
         if self.state.num_of_chars > self.max_chars:
@@ -294,20 +290,21 @@ class AgentController:
             action = self.agent.step(self.state)
             if action is None:
                 raise AgentNoActionError('No action was returned')
-        except (AgentMalformedActionError, AgentNoActionError, LLMOutputError) as e:
+        except (
+            AgentMalformedActionError,
+            AgentNoActionError,
+            AgentLLMOutputError,
+        ) as e:
             await self.report_error(str(e))
             return
 
         logger.info(action, extra={'msg_type': 'ACTION'})
-
         await self.update_state_after_step()
         if action.runnable:
             self._pending_action = action
-        else:
-            await self.add_history(action, NullObservation(''))
 
         if not isinstance(action, NullAction):
-            await self.event_stream.add_event(action, EventSource.AGENT)
+            self.event_stream.add_event(action, EventSource.AGENT)
 
         if self._is_stuck():
             await self.report_error('Agent got stuck in a loop')
@@ -316,8 +313,40 @@ class AgentController:
     def get_state(self):
         return self.state
 
-    def set_state(self, state: State):
-        self.state = state
+    def _set_initial_state(
+        self,
+        state: State | None = None,
+        max_iterations: int = MAX_ITERATIONS,
+    ):
+        # state from the previous session, state from a parent agent, or a new state
+        # note that this is called twice when restoring a previous session, first with state=None
+        if state is None:
+            self.state = State(inputs={}, max_iterations=max_iterations)
+        else:
+            self.state = state
+
+        # when restored from a previous session, the State object will have history, start_id, and end_id
+        # connect it to the event stream
+        self.state.history.set_event_stream(self.event_stream)
+
+        # init the memory condenser
+        self.state.history.init_memory_condenser(self.agent.llm)
+
+        # if start_id was not set in State, we're starting fresh, at the top of the stream
+        start_id = self.state.start_id
+        if start_id == -1:
+            start_id = self.event_stream.get_latest_event_id() + 1
+        else:
+            logger.debug(f'AgentController {self.id} restoring from event {start_id}')
+
+        # make sure history is in sync
+        self.state.start_id = start_id
+        self.state.history.start_id = start_id
+
+        # if there was an end_id saved in State, set it in history
+        # currently used only for delegates internally in history
+        if self.state.end_id > -1:
+            self.state.history.end_id = self.state.end_id
 
     def _is_stuck(self):
         # check if delegate stuck
@@ -326,72 +355,131 @@ class AgentController:
 
         # filter out MessageAction with source='user' from history
         filtered_history = [
-            _tuple
-            for _tuple in self.state.history
+            event
+            for event in self.state.history.get_events()
             if not (
-                isinstance(_tuple[0], MessageAction)
-                and _tuple[0].source == EventSource.USER
+                (isinstance(event, MessageAction) and event.source == EventSource.USER)
+                or
+                # there might be some NullAction or NullObservation in the history at least for now
+                isinstance(event, NullAction)
+                or isinstance(event, NullObservation)
             )
         ]
 
+        # scenario 1: same action, same observation
+        # it takes 3 actions and 3 observations to detect a loop
         if len(filtered_history) < 3:
             return False
 
-        # FIXME rewrite this to be more readable
+        last_actions: list[Event] = []
+        last_observations: list[Event] = []
+        # retrieve the last four actions and observations starting from the end of history, wherever they are
+        for event in reversed(filtered_history):
+            if isinstance(event, Action) and len(last_actions) < 4:
+                last_actions.append(event)
+            elif isinstance(event, Observation) and len(last_observations) < 4:
+                last_observations.append(event)
 
-        # Scenario 1: the same (Action, Observation) loop
-        # 3 pairs of (action, observation) to stop the agent
-        last_three_tuples = filtered_history[-3:]
+            if len(last_actions) == 4 and len(last_observations) == 4:
+                break
 
-        if all(
-            # (Action, Observation) tuples
-            # compare the last action to the last three actions
-            self._eq_no_pid(last_three_tuples[-1][0], _tuple[0])
-            for _tuple in last_three_tuples
-        ) and all(
-            # compare the last observation to the last three observations
-            self._eq_no_pid(last_three_tuples[-1][1], _tuple[1])
-            for _tuple in last_three_tuples
+        # are the last three actions the same?
+        last_three_actions = last_actions[-3:]
+        last_three_observations = last_observations[-3:]
+        if len(last_three_actions) == 3 and all(
+            self._eq_no_pid(last_three_actions[0], action)
+            for action in last_three_actions
         ):
-            logger.warning('Action, Observation loop detected')
-            return True
-
-        if len(filtered_history) < 4:
-            return False
-
-        last_four_tuples = filtered_history[-4:]
-
-        # Scenario 2: (action, error) pattern, not necessary identical error
-        # 4 pairs of (action, error) to stop the agent
-        if all(
-            self._eq_no_pid(last_four_tuples[-1][0], _tuple[0])
-            for _tuple in last_four_tuples
-        ):
-            # It repeats the same action, give it a chance, but not if:
-            if all(
-                isinstance(_tuple[1], ErrorObservation) for _tuple in last_four_tuples
+            if len(last_three_observations) == 3 and all(
+                self._eq_no_pid(last_three_observations[0], observation)
+                for observation in last_three_observations
             ):
+                logger.warning('Action, Observation loop detected')
+                return True
+
+        # scenario 2: same action, errors
+        # it takes 4 actions and 4 observations to detect a loop
+        # check if the last four actions are the same and result in errors
+        # retrieve the last four actions and observations starting from the end of history, wherever they are
+
+        # are the last four actions the same?
+        if len(last_actions) == 4 and all(
+            self._eq_no_pid(last_actions[0], action) for action in last_actions
+        ):
+            # and the last four observations all errors?
+            if all(isinstance(obs, ErrorObservation) for obs in last_observations):
                 logger.warning('Action, ErrorObservation loop detected')
                 return True
 
-        # check if the agent repeats the same (Action, Observation)
-        # every other step in the last six tuples
-        # step1 = step3 = step5
-        # step2 = step4 = step6
-        if len(filtered_history) >= 6:
-            last_six_tuples = filtered_history[-6:]
-            if (
-                # this pattern is every other step, like:
-                # (action_1, obs_1), (action_2, obs_2), (action_1, obs_1), (action_2, obs_2),...
-                self._eq_no_pid(last_six_tuples[-1][0], last_six_tuples[-3][0])
-                and self._eq_no_pid(last_six_tuples[-1][0], last_six_tuples[-5][0])
-                and self._eq_no_pid(last_six_tuples[-2][0], last_six_tuples[-4][0])
-                and self._eq_no_pid(last_six_tuples[-2][0], last_six_tuples[-6][0])
-                and self._eq_no_pid(last_six_tuples[-1][1], last_six_tuples[-3][1])
-                and self._eq_no_pid(last_six_tuples[-1][1], last_six_tuples[-5][1])
-                and self._eq_no_pid(last_six_tuples[-2][1], last_six_tuples[-4][1])
-                and self._eq_no_pid(last_six_tuples[-2][1], last_six_tuples[-6][1])
+        # scenario 3: monologue
+        # check for repeated MessageActions with source=AGENT
+        # see if the agent is engaged in a good old monologue, telling itself the same thing over and over
+        agent_message_actions = [
+            (i, event)
+            for i, event in enumerate(filtered_history)
+            if isinstance(event, MessageAction) and event.source == EventSource.AGENT
+        ]
+
+        # last three message actions will do for this check
+        if len(agent_message_actions) >= 3:
+            last_agent_message_actions = agent_message_actions[-3:]
+
+            if all(
+                self._eq_no_pid(last_agent_message_actions[0][1], action[1])
+                for action in last_agent_message_actions
             ):
+                # check if there are any observations between the repeated MessageActions
+                # then it's not yet a loop, maybe it can recover
+                start_index = last_agent_message_actions[0][0]
+                end_index = last_agent_message_actions[-1][0]
+
+                has_observation_between = False
+                for event in filtered_history[start_index + 1 : end_index]:
+                    if isinstance(event, Observation):
+                        has_observation_between = True
+                        break
+
+                if not has_observation_between:
+                    logger.warning('Repeated MessageAction with source=AGENT detected')
+                    return True
+
+        # scenario 4: action, observation pattern on the last six steps
+        # check if the agent repeats the same (Action, Observation)
+        # every other step in the last six steps
+        last_six_actions: list[Event] = []
+        last_six_observations: list[Event] = []
+
+        # the end of history is most interesting
+        for event in reversed(filtered_history):
+            if isinstance(event, Action) and len(last_six_actions) < 6:
+                last_six_actions.append(event)
+            elif isinstance(event, Observation) and len(last_six_observations) < 6:
+                last_six_observations.append(event)
+
+            if len(last_six_actions) == 6 and len(last_six_observations) == 6:
+                break
+
+        # this pattern is every other step, like:
+        # (action_1, obs_1), (action_2, obs_2), (action_1, obs_1), (action_2, obs_2),...
+        if len(last_six_actions) == 6 and len(last_six_observations) == 6:
+            actions_equal = (
+                # action_0 == action_2 == action_4
+                self._eq_no_pid(last_six_actions[0], last_six_actions[2])
+                and self._eq_no_pid(last_six_actions[0], last_six_actions[4])
+                # action_1 == action_3 == action_5
+                and self._eq_no_pid(last_six_actions[1], last_six_actions[3])
+                and self._eq_no_pid(last_six_actions[1], last_six_actions[5])
+            )
+            observations_equal = (
+                # obs_0 == obs_2 == obs_4
+                self._eq_no_pid(last_six_observations[0], last_six_observations[2])
+                and self._eq_no_pid(last_six_observations[0], last_six_observations[4])
+                # obs_1 == obs_3 == obs_5
+                and self._eq_no_pid(last_six_observations[1], last_six_observations[3])
+                and self._eq_no_pid(last_six_observations[1], last_six_observations[5])
+            )
+
+            if actions_equal and observations_equal:
                 logger.warning('Action, Observation pattern detected')
                 return True
 

@@ -35,7 +35,7 @@ class AgentNotRegisteredError(Exception):
         super().__init__(message)
 
 
-class LLMOutputError(Exception):
+class AgentLLMOutputError(Exception):
     def __init__(self, message):
         super().__init__(message)
 
@@ -79,4 +79,18 @@ class AgentMalformedActionError(Exception):
 
 class AgentNoActionError(Exception):
     def __init__(self, message='Agent must return an action'):
+        super().__init__(message)
+
+
+class ContextWindowLimitExceededError(Exception):
+    def __init__(
+        self, message='Context window limit exceeded. Unable to condense memory.'
+    ):
+        super().__init__(message)
+
+
+class TokenLimitExceedError(Exception):
+    """Exception raised when the user-defined max_input_tokens limit is exceeded."""
+
+    def __init__(self, message='User-defined token limit exceeded. Condensing memory.'):
         super().__init__(message)
