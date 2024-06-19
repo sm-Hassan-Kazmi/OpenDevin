@@ -48,8 +48,8 @@ class Linter:
         stdout, _ = process.communicate()
         errors = stdout.decode().strip()
         self.returncode = process.returncode
-        # if process.returncode == 0:
-        #     return  # zero exit status
+        if self.returncode == 0:
+            return  # zero exit status
 
         cmd = ' '.join(cmd)
         res = ''
@@ -62,11 +62,18 @@ class Linter:
             linenums = [num - 1 for num in linenums]
         return LintResult(text=res, lines=linenums)
 
-    def lint(self, fname, cmd=None):
-        rel_fname = self.get_rel_fname(fname)
-        absolute_fname = os.path.abspath(rel_fname)
-        code = Path(fname).read_text(self.encoding)
+    def get_abs_fname(self, fname):
+        if os.path.isabs(fname): 
+            return fname
+        elif os.path.isfile(fname):
+            rel_fname = self.get_rel_fname(fname)
+            return os.path.abspath(rel_fname)
+        else: # if a temp file
+            return self.get_rel_fname(fname)
 
+    def lint(self, fname, cmd=None):
+        code = Path(fname).read_text(self.encoding)
+        absolute_fname = self.get_abs_fname(fname)
         if cmd:
             cmd = cmd.strip()
         if not cmd:
