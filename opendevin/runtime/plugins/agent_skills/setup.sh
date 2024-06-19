@@ -15,4 +15,6 @@ echo 'export PATH=/opendevin/plugins/agent_skills:$PATH' >> ~/.bashrc
 # add agent_skills to PYTHONPATH
 echo 'export PYTHONPATH=/opendevin/plugins/agent_skills:$PYTHONPATH' >> ~/.bashrc
 
-pip install flake8 python-docx PyPDF2 python-pptx pylatexenc openai opencv-python tree-sitter grep-ast
+source ~/.bashrc
+
+$OPENDEVIN_PYTHON_INTERPRETER -m pip install flake8 python-docx PyPDF2 python-pptx pylatexenc openai opencv-python
