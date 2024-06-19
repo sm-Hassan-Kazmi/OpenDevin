@@ -20,7 +20,6 @@ import base64
 import functools
 import os
 import shutil
-import subprocess
 import tempfile
 from inspect import signature
 from typing import Optional
@@ -31,9 +30,12 @@ from openai import OpenAI
 from pptx import Presentation
 from pylatexenc.latex2text import LatexNodes2Text
 
+from opendevin.runtime.plugins.agent_skills.aider_linter import Linter
+
 CURRENT_FILE: str | None = None
 CURRENT_LINE = 1
 WINDOW = 100
+
 
 ENABLE_AUTO_LINT = os.getenv('ENABLE_AUTO_LINT', 'false').lower() == 'true'
 
@@ -124,46 +126,26 @@ def _lint_file(file_path: str) -> tuple[Optional[str], Optional[int]]:
     Returns:
         tuple[str, Optional[int]]: (lint_error, first_error_line_number)
     """
+    first_error_line = None
+    linter = Linter(root=os.getcwd())
+    error_message = linter.lint(file_path)
+    if linter.returncode == 0:
+        # Linting successful. No issues found.
+        return None, None
+    lint_error = 'ERRORS:\n' + error_message
 
-    if file_path.endswith('.py'):
-        # Define the flake8 command with selected error codes
-        command = [
-            'flake8',
-            '--isolated',
-            '--select=F821,F822,F831,E112,E113,E999,E902',
-            file_path,
-        ]
-
-        # Run the command using subprocess and redirect stderr to stdout
-        result = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        if result.returncode == 0:
-            # Linting successful. No issues found.
-            return None, None
-
-        # Extract the line number from the first error message
-        error_message = result.stdout.decode().strip()
-        lint_error = 'ERRORS:\n' + error_message
-        first_error_line = None
-        for line in error_message.splitlines(True):
-            if line.strip():
-                # The format of the error message is: <filename>:<line>:<column>: <error code> <error message>
-                parts = line.split(':')
-                if len(parts) >= 2:
-                    try:
-                        first_error_line = int(parts[1])
-                        break
-                    except ValueError:
-                        # Not a valid line number, continue to the next line
-                        continue
-
-        return lint_error, first_error_line
-
-    # Not a python file, skip linting
-    return None, None
+    for line in lint_error.splitlines(True):
+        if line.strip():
+            # The format of the error message is: <filename>:<line>:<column>: <error code> <error message>
+            parts = line.split(':')
+            if len(parts) >= 2:
+                try:
+                    first_error_line = int(parts[1])
+                    break
+                except ValueError:
+                    # Not a valid line number, continue to the next line
+                    continue
+    return lint_error, first_error_line
 
 
 def _print_window(file_path, targeted_line, WINDOW, return_str=False):
@@ -451,7 +433,6 @@ def _edit_or_append_file(
                     '[Your proposed edit has introduced new syntax error(s). Please understand the errors and retry your edit command.]'
                 )
                 print(lint_error)
-
                 print('[This is how your edit would have looked if applied]')
                 print('-------------------------------------------------')
                 _print_window(file_name, CURRENT_LINE, 10)
@@ -878,4 +859,7 @@ for func_name in __all__:
     cur_doc = '\n'.join(map(lambda x: ' ' * 4 + x, cur_doc.split('\n')))
 
     fn_signature = f'{func.__name__}' + str(signature(func))
+    DOCUMENTATION += f'{fn_signature}:\n{cur_doc}\n\n'
+    DOCUMENTATION += f'{fn_signature}:\n{cur_doc}\n\n'
+    DOCUMENTATION += f'{fn_signature}:\n{cur_doc}\n\n'
     DOCUMENTATION += f'{fn_signature}:\n{cur_doc}\n\n'
