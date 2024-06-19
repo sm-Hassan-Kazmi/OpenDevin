@@ -6,6 +6,7 @@ import traceback
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict
 
 from grep_ast import TreeContext, filename_to_lang
 from tree_sitter_languages import get_parser  # noqa: E402
@@ -190,7 +191,7 @@ def traverse_tree(node):
     return errors
 
 
-def find_filenames_and_linenums(text, fnames) -> Dict[str, set|int]:
+def find_filenames_and_linenums(text, fnames) -> Dict[str, set | int]:
     """
     Search text for all occurrences of <filename>:\\d+ and make a list of them
     where <filename> is one of the filenames in the list `fnames`.
