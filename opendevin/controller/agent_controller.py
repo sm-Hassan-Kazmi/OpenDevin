@@ -17,6 +17,7 @@ from opendevin.events import EventSource, EventStream, EventStreamSubscriber
 from opendevin.events.action import (
     Action,
     AddTaskAction,
+    AgentAutoModeAction,
     AgentDelegateAction,
     AgentFinishAction,
     AgentRejectAction,
@@ -186,17 +187,23 @@ class AgentController:
             elif isinstance(event, AgentDelegateObservation):
                 await self.add_history(NullAction(), event)
                 logger.info(event, extra={'msg_type': 'OBSERVATION'})
+        elif isinstance(event, AgentAutoModeAction):
+            config.agent.is_autonomous = event.is_enabled
+            logger.info(f'Auto mode {event.is_enabled = }')
+
+        else:
+            logger.warning(f'Unhandled event: {event}')
 
     def reset_task(self):
         self.agent.reset()
 
     async def set_agent_state_to(self, new_state: AgentState):
+        if new_state == self.state.agent_state:
+            return
+
         logger.info(
             f'[Agent Controller {self.id}] Setting agent({type(self.agent).__name__}) state from {self.state.agent_state} to {new_state}'
         )
-
-        if new_state == self.state.agent_state:
-            return
 
         self.state.agent_state = new_state
         if new_state == AgentState.STOPPED or new_state == AgentState.ERROR:

@@ -30,7 +30,16 @@ const messageActions = {
     if (message.source === "user") {
       store.dispatch(addUserMessage(message.args.content));
     } else {
-      store.dispatch(addAssistantMessage(message.args.content));
+      const autoMsg =
+        "\n----------\n" +
+        "Please continue working on the task on whatever approach you think is suitable.\n" +
+        "If you think you have solved the task, you can give <finish> to end the interaction.\n" +
+        "IMPORTANT: YOU SHOULD NEVER ASK FOR HUMAN HELP.\n";
+      let msg = message.args.content;
+      if (msg.includes(autoMsg)) {
+        msg = msg.replace(autoMsg, "🤖");
+      }
+      store.dispatch(addAssistantMessage(msg));
     }
   },
   [ActionType.FINISH]: (message: ActionMessage) => {
