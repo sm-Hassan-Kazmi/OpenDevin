@@ -9,7 +9,7 @@ import uuid
 from glob import glob
 
 import docker
-from pexpect import exceptions, pxssh
+from pexpect import EOF, TIMEOUT, ExceptionPexpect, exceptions, pxssh
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from opendevin.core.config import config
@@ -41,7 +41,11 @@ class SSHExecCancellableStream(CancellableStream):
             return -1
 
         _exit_code = self.ssh.before.strip()
-        return int(_exit_code)
+        try:
+            return int(_exit_code)
+        except ValueError:
+            logger.error(f'Invalid exit code: {_exit_code}')
+            return -1
 
     def read_output(self):
         st = time.time()
@@ -490,10 +494,38 @@ class DockerSSHBox(Sandbox):
         self.ssh.sendline(cmd)
         if stream:
             return 0, SSHExecCancellableStream(self.ssh, cmd, self.timeout)
-        success = self.ssh.prompt(timeout=timeout)
-        if not success:
-            return self._send_interrupt(cmd)
-        command_output = self.ssh.before
+        prompts = [
+            r'Do you want to continue\? \[Y/n\]',
+            self.ssh.PROMPT,
+            EOF,
+            TIMEOUT,
+        ]
+        command_output = ''
+        timeout_counter = 0
+        while True:
+            try:
+                # Wait for one of the prompts
+                index = self.ssh.expect(prompts, timeout=1)
+                line = self.ssh.before
+                logger.info(line)
+                command_output += line
+                if index == 0:
+                    self.ssh.sendline('Y')
+                elif index == 1:
+                    break
+                elif index == 2:
+                    logger.debug('End of file')
+                    break
+                elif index == 3:
+                    timeout_counter += 1
+                    if timeout_counter > timeout:
+                        logger.exception(
+                            'Command timed out, killing process...', exc_info=False
+                        )
+                        return self._send_interrupt(cmd)
+            except ExceptionPexpect as e:
+                logger.exception(f'Unexpected exception: {e}')
+                break
 
         # once out, make sure that we have *every* output, we while loop until we get an empty output
         while True:
@@ -510,7 +542,7 @@ class DockerSSHBox(Sandbox):
             )
             if isinstance(output, str) and output.strip() == '':
                 break
-            command_output += output
+            command_output += str(output)
         command_output = command_output.removesuffix('\r\n')
 
         # get the exit code
@@ -789,11 +821,9 @@ if __name__ == '__main__':
     except Exception as e:
         logger.exception('Failed to start Docker container: %s', e)
         sys.exit(1)
-
     logger.info(
         "Interactive Docker container started. Type 'exit' or use Ctrl+C to exit."
     )
-
     # Initialize required plugins
     plugins = [AgentSkillsRequirement(), JupyterRequirement()]
     ssh_box.init_plugins(plugins)
@@ -804,7 +834,7 @@ if __name__ == '__main__':
     )
 
     bg_cmd = ssh_box.execute_in_background(
-        "while true; do echo -n '.' && sleep 10; done"
+        "while true; do echo -n '.' && sleep 20; done"
     )
 
     sys.stdout.flush()
@@ -824,7 +854,6 @@ if __name__ == '__main__':
                 continue
             exit_code, output = ssh_box.execute(user_input)
             logger.info('exit code: %d', exit_code)
-            logger.info(output)
             if bg_cmd.pid in ssh_box.background_commands:
                 logs = ssh_box.read_logs(bg_cmd.pid)
                 logger.info('background logs: %s', logs)
