@@ -217,7 +217,9 @@ class DockerSSHBox(Sandbox):
                 raise Exception(
                     'Persistent sandbox is currently designed for opendevin user only. Please set run_as_devin=True in your config.toml'
                 )
-            self.instance_id = 'persisted'
+            path = config.workspace_mount_path
+            path = ''.join(c if c.isalnum() else '_' for c in path)  # type: ignore
+            self.instance_id = 'persisted-' + path
         else:
             self.instance_id = (sid or '') + str(uuid.uuid4())
 
