@@ -127,25 +127,12 @@ def _lint_file(file_path: str) -> tuple[Optional[str], Optional[int]]:
         tuple[str, Optional[int]]: (lint_error, first_error_line_number)
     """
     linter = Linter(root=os.getcwd())
-    first_error_line = None
-    error_message = linter.lint(file_path)
+    lint_result = linter.lint(file_path)
     if linter.returncode == 0:
         # Linting successful. No issues found.
         return None, None
-    lint_error = 'ERRORS:\n' + error_message
-
-    for line in lint_error.splitlines(True):
-        if line.strip():
-            # The format of the error message is: <filename>:<line>:<column>: <error code> <error message>
-            parts = line.split(':')
-            if len(parts) >= 2:
-                try:
-                    first_error_line = int(parts[1])
-                    break
-                except ValueError:
-                    # Not a valid line number, continue to the next line
-                    continue
-    return lint_error, first_error_line
+    lint_error = 'ERRORS:\n' + lint_result.text
+    return lint_error, lint_result.lines[0]
 
 
 def _print_window(file_path, targeted_line, WINDOW, return_str=False):
@@ -433,6 +420,7 @@ def _edit_or_append_file(
                     '[Your proposed edit has introduced new syntax error(s). Please understand the errors and retry your edit command.]'
                 )
                 print(lint_error)
+                
                 print('[This is how your edit would have looked if applied]')
                 print('-------------------------------------------------')
                 _print_window(file_name, CURRENT_LINE, 10)

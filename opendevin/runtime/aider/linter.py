@@ -14,6 +14,11 @@ from tree_sitter_languages import get_parser  # noqa: E402
 # tree_sitter is throwing a FutureWarning
 warnings.simplefilter('ignore', category=FutureWarning)
 
+@dataclass
+class LintResult:
+    text: str
+    lines: list
+
 
 class Linter:
     def __init__(self, encoding='utf-8', root=None):
@@ -54,13 +59,8 @@ class Linter:
         cmd = ' '.join(cmd)
         res = ''
         res += errors
-
-        linenums = []
-        filenames_linenums = find_filenames_and_linenums(errors, [rel_fname])
-        if filenames_linenums:
-            filename, linenums = next(iter(filenames_linenums.items()))
-            linenums = [num - 1 for num in linenums]
-        return LintResult(text=res, lines=linenums)
+        line_num = extract_error_line_from(res)
+        return LintResult(text=res, lines=[line_num])
 
     def get_abs_fname(self, fname):
         if os.path.isabs(fname): 
@@ -71,7 +71,7 @@ class Linter:
         else: # if a temp file
             return self.get_rel_fname(fname)
 
-    def lint(self, fname, cmd=None):
+    def lint(self, fname, cmd=None) -> LintResult | None:
         code = Path(fname).read_text(self.encoding)
         absolute_fname = self.get_abs_fname(fname)
         if cmd:
@@ -84,22 +84,16 @@ class Linter:
                 cmd = self.all_lint_cmd
             else:
                 cmd = self.languages.get(lang)
-
         if callable(cmd):
             linkres = cmd(fname, absolute_fname, code)
         elif cmd:
             linkres = self.run_cmd(cmd, absolute_fname, code)
         else:
             linkres = basic_lint(absolute_fname, code)
+        return linkres
 
-        if not linkres:
-            return
-        return linkres.text
 
-    def py_lint(self, fname, rel_fname, code):
-        basic_res = basic_lint(rel_fname, code)
-        compile_res = lint_python_compile(fname, code)
-
+    def flake_lint(self, rel_fname, code):
         fatal = 'E9,F821,F823,F831,F406,F407,F701,F702,F704,F706'
         flake8 = f'flake8 --select={fatal} --isolated'
 
@@ -107,18 +101,15 @@ class Linter:
             flake_res = self.run_cmd(flake8, rel_fname, code)
         except FileNotFoundError:
             flake_res = None
-        possible_results = [flake_res, basic_res, compile_res]
-        result_set = [result for result in possible_results if result]
-        if result_set:
-            first_result = result_set[0]
-            return LintResult(first_result.text, first_result.lines)
+        return flake_res
 
-
-@dataclass
-class LintResult:
-    text: str
-    lines: list
-
+    def py_lint(self, fname, rel_fname, code):
+        error = self.flake_lint(rel_fname, code)
+        if not error:
+            error = lint_python_compile(fname, code)
+        if not error:
+            error = basic_lint(rel_fname, code)
+        return error
 
 def lint_python_compile(fname, code):
     try:
@@ -137,7 +128,6 @@ def lint_python_compile(fname, code):
             if target in tb_lines[i]:
                 last_file_i = i
                 break
-
         tb_lines = tb_lines[:1] + tb_lines[last_file_i + 1 :]
 
     res = ''.join(tb_lines)
@@ -159,9 +149,21 @@ def basic_lint(fname, code):
     errors = traverse_tree(tree.root_node)
     if not errors:
         return
+    return LintResult(text=f'{fname}:{errors[0]}', lines=errors)
 
-    return LintResult(text='', lines=errors)
-
+def extract_error_line_from(lint_error):
+    # moved from opendevin.agentskills#_lint_file
+    for line in lint_error.splitlines(True):
+        if line.strip():
+            # The format of the error message is: <filename>:<line>:<column>: <error code> <error message>
+            parts = line.split(':')
+            if len(parts) >= 2:
+                try:
+                    first_error_line = int(parts[1])
+                    break
+                except ValueError:
+                    continue
+    return first_error_line
 
 def tree_context(fname, code, line_nums):
     context = TreeContext(

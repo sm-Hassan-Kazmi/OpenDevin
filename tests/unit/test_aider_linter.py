@@ -18,6 +18,32 @@ foo()
     yield temp_name
     os.remove(temp_name)
 
+@pytest.fixture
+def temp_ruby_file_errors(tmp_path):
+    # Fixture to create a temporary file
+    temp_name = os.path.join(tmp_path, 'lint-test.rb')
+    with open(temp_name, 'w', encoding='utf-8') as tmp_file:
+        tmp_file.write("""def foo():
+    print("Hello, World!")
+foo()
+""")
+    tmp_file.close()
+    yield temp_name
+    os.remove(temp_name)
+
+@pytest.fixture
+def temp_ruby_file_correct(tmp_path):
+    # Fixture to create a temporary file
+    temp_name = os.path.join(tmp_path, 'lint-test.rb')
+    with open(temp_name, 'w', encoding='utf-8') as tmp_file:
+        tmp_file.write("""def foo
+  puts "Hello, World!"
+end
+foo
+""")
+    tmp_file.close()
+    yield temp_name
+    os.remove(temp_name)
 
 @pytest.fixture
 def linter(tmp_path):
@@ -38,13 +64,6 @@ def test_run_cmd(linter, temp_file):
     assert result is None  # echo command should return zero exit status
 
 
-def test_py_lint(linter, temp_file):
-    # Test py_lint method
-    result = linter.py_lint(
-        temp_file, linter.get_rel_fname(temp_file), "print('Hello, World!')\n"
-    )
-
-    assert result is None  # No lint errors expected for this simple code
 
 
 def test_set_linter(linter):
@@ -57,13 +76,51 @@ def test_set_linter(linter):
     assert 'custom' in linter.languages
     assert linter.languages['custom'] == custom_linter
 
+def test_py_lint(linter, temp_file):
+    # Test py_lint method
+    result = linter.py_lint(
+        temp_file, linter.get_rel_fname(temp_file), "print('Hello, World!')\n"
+    )
+
+    assert result is None  # No lint errors expected for this simple code
+
+
+def test_py_lint_fail(linter, temp_file):
+    # Test py_lint method
+    result = linter.py_lint(
+        temp_file, linter.get_rel_fname(temp_file), "print('Hello, World!')\n"
+    )
+
+    assert result is None
 
 def test_basic_lint(temp_file):
     from opendevin.runtime.aider.linter import basic_lint
+    poorly_formatted_code = """
+        def foo()
+            print("Hello, World!")
+        print("Wrong indent")
+        foo(
+        """
+    result = basic_lint(temp_file, poorly_formatted_code)
 
-    result = basic_lint(temp_file, "print('Hello, World!')\n")
+    assert isinstance(result, LintResult)
+    assert result.text == f"{temp_file}:1"
+    assert 1 in result.lines
 
-    assert result is None  # No basic lint errors expected for this simple code
+def test_basic_lint_fail_returns_text_and_lines(temp_file):
+    from opendevin.runtime.aider.linter import basic_lint
+    poorly_formatted_code = """
+        def foo()
+            print("Hello, World!")
+        print("Wrong indent")
+        foo(
+        """
+
+    result = basic_lint(temp_file, poorly_formatted_code)
+
+    assert isinstance(result, LintResult)
+    assert result.text == f"{temp_file}:1"
+    assert 1 in result.lines
 
 
 def test_lint_python_compile(temp_file):
@@ -71,7 +128,20 @@ def test_lint_python_compile(temp_file):
 
     result = lint_python_compile(temp_file, "print('Hello, World!')\n")
 
-    assert result is None  # No compile errors expected for this simple code
+    assert result is None
+
+def test_lint_python_compile_fail_returns_text_and_lines(temp_file):
+    from opendevin.runtime.aider.linter import lint_python_compile
+    poorly_formatted_code = """
+        def foo()
+            print("Hello, World!")
+        print("Wrong indent")
+        foo(
+        """
+    result = lint_python_compile(temp_file, poorly_formatted_code)
+    
+    assert temp_file in result.text
+    assert 1 in result.lines
 
 
 def test_lint(linter, temp_file):
@@ -93,3 +163,16 @@ foo(
     errors = linter.lint(temp_file)
 
     assert errors is not None
+
+def test_lint_pass_ruby(linter, temp_ruby_file_correct):
+    result = linter.lint(temp_ruby_file_correct)
+    assert result is None
+
+def test_lint_fail_ruby(linter, temp_ruby_file_errors):
+    errors = linter.lint(temp_ruby_file_errors)
+    assert errors is not None
+    
+    
+
+
+
