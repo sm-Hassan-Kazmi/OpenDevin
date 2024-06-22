@@ -1,0 +1,90 @@
+name: Update pyproject.toml Version and Tags
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  update-pyproject-and-tags:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for all branches and tags
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install toml semver
+
+      - name: Check write permissions
+        id: check_permissions
+        run: |
+          if [ "$(jq -r '.permissions.contents' < "$GITHUB_EVENT_PATH")" != "write" ]; then
+            echo "Write permissions are required for this action to run."
+            exit 0
+          fi
+
+      - name: Get latest release tag and pyproject version
+        id: get_versions
+        run: |
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1) 2>/dev/null || echo "v0.0.0")
+          PYPROJECT_VERSION=$(python -c "import toml; print(toml.load('pyproject.toml')['tool']['poetry']['version'])")
+          echo "::set-output name=latest_tag::$LATEST_TAG"
+          echo "::set-output name=pyproject_version::$PYPROJECT_VERSION"
+
+      - name: Compare versions
+        id: compare_versions
+        run: |
+          python -c "
+          import semver
+          latest_tag = '${{ steps.get_versions.outputs.latest_tag }}'.lstrip('v')
+          pyproject_version = '${{ steps.get_versions.outputs.pyproject_version }}'
+
+          if semver.compare(pyproject_version, latest_tag) > 0:
+              print('::set-output name=action::create_tag')
+          elif semver.compare(pyproject_version, latest_tag) < 0:
+              print('::set-output name=action::update_pyproject')
+          else:
+              print('::set-output name=action::no_action')
+          "
+
+      - name: Update pyproject.toml
+        if: steps.compare_versions.outputs.action == 'update_pyproject'
+        run: |
+          python -c "
+          import toml
+          with open('pyproject.toml', 'r') as f:
+              data = toml.load(f)
+          data['tool']['poetry']['version'] = '${{ steps.get_versions.outputs.latest_tag }}'.lstrip('v')
+          with open('pyproject.toml', 'w') as f:
+              toml.dump(data, f)
+          "
+
+      - name: Commit and push pyproject.toml changes
+        if: steps.compare_versions.outputs.action == 'update_pyproject'
+        run: |
+          git config --global user.name 'github-actions'
+          git config --global user.email 'github-actions@github.com'
+          git add pyproject.toml
+          git commit -m "Update pyproject.toml version to ${{ steps.get_versions.outputs.latest_tag }}"
+          git push
+
+      - name: Create new tag
+        if: steps.compare_versions.outputs.action == 'create_tag'
+        run: |
+          NEW_TAG="v${{ steps.get_versions.outputs.pyproject_version }}"
+          git config --global user.name 'github-actions'
+          git config --global user.email 'github-actions@github.com'
+          git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
+          git push origin "$NEW_TAG"
