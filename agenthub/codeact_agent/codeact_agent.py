@@ -1,3 +1,5 @@
+import re
+
 from agenthub.codeact_agent.action_parser import CodeActResponseParser
 from agenthub.codeact_agent.prompt import (
     COMMAND_DOCS,
@@ -8,6 +10,7 @@ from agenthub.codeact_agent.prompt import (
 )
 from opendevin.controller.agent import Agent
 from opendevin.controller.state.state import State
+from opendevin.core.config import config
 from opendevin.events.action import (
     Action,
     AgentFinishAction,
@@ -22,6 +25,7 @@ from opendevin.events.observation import (
     CmdOutputObservation,
     IPythonRunCellObservation,
 )
+from opendevin.indexing import IndexSettings, RAGIndex
 from opendevin.llm.llm import LLM
 from opendevin.runtime.plugins import (
     AgentSkillsRequirement,
@@ -31,6 +35,7 @@ from opendevin.runtime.plugins import (
 from opendevin.runtime.tools import RuntimeTool
 
 ENABLE_GITHUB = True
+ENABLE_VECTOR_INDEX = False
 
 
 def action_to_str(action: Action) -> str:
@@ -57,6 +62,18 @@ def get_action_message(action: Action) -> dict[str, str] | None:
             'content': action_to_str(action),
         }
     return None
+
+
+def get_action_thought(action: Action | None) -> str:
+    if (
+        isinstance(action, CmdRunAction)
+        or isinstance(action, IPythonRunCellAction)
+        or isinstance(action, BrowseInteractiveAction)
+    ):
+        return action.thought
+    elif isinstance(action, MessageAction):
+        return action.content
+    return ''
 
 
 def get_observation_message(obs) -> dict[str, str] | None:
@@ -178,6 +195,16 @@ class CodeActAgent(Agent):
         super().__init__(llm)
         self.reset()
 
+        index_settings = IndexSettings(
+            vector_engine='pinecone',
+            existing_index_name=config.agent.existing_index_name,
+        )
+
+        # nodes = rag_index.run_ingestion()
+        # print(f'Indexed {len(nodes)} nodes.')
+
+        self.vector_index = RAGIndex(index_settings) if ENABLE_VECTOR_INDEX else None
+
     def reset(self) -> None:
         """
         Resets the CodeAct Agent.
@@ -214,9 +241,56 @@ class CodeActAgent(Agent):
                 messages.append(obs_message)
 
         latest_user_message = [m for m in messages if m['role'] == 'user'][-1]
+        latest_action, _ = state.history[-1] if state.history else (None, None)
+        latest_action_thought = get_action_thought(latest_action)
+
+        # TODO: maybe consider retrieving latest observation as well, as for some actions like `open_file` we can also get some relevant context
+
         if latest_user_message:
             if latest_user_message['content'].strip() == '/exit':
                 return AgentFinishAction()
+
+            if self.vector_index:
+                # search the workspace for similar content
+                if len(latest_action_thought.strip()) == 0:
+                    # use the problem statement as the query
+                    # FIXME: this is a hacky way to get the problem statement
+                    first_user_message = [m for m in messages if m['role'] == 'user'][
+                        0
+                    ]['content']
+                    pattern = re.compile(
+                        r'# Problem Statement(.*?)IMPORTANT:', re.DOTALL
+                    )
+                    match = pattern.search(first_user_message)
+
+                    if match:
+                        content = match.group(1).strip()
+                        print('Problem statement: ' + content)
+                        latest_action_thought = content
+                    else:
+                        print('No match found.')
+
+                if latest_action_thought:
+                    search_results = self.vector_index.semantic_search(
+                        query=latest_action_thought, top_k=3
+                    )
+                    search_results_str = ''
+
+                    for i, r in enumerate(search_results):
+                        search_results_str += 'Snippet ' + str(i + 1) + ':' + '\n'
+                        text, metadata = r
+                        # for key, value in metadata.items():
+                        #     search_results_str += (key + ": " + value + "\n")
+                        search_results_str += (
+                            'Relative file name' + ': ' + metadata['file_name'] + '\n'
+                        )
+
+                        search_results_str += '\n' + text + '\n\n'
+
+                    latest_user_message['content'] += (
+                        f'\n\nNote that you should NOT eagerly try to solve the task, but carefully consider multiple files that may be involved. Some context code snippets that may be relevant to help you solve the task (the file name is not absolute and you should find the correct location yourself):\n{search_results_str}'
+                    )
+
             latest_user_message['content'] += (
                 f'\n\nENVIRONMENT REMINDER: You have {state.max_iterations - state.iteration} turns left to complete the task.'
             )
