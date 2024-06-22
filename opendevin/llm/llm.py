@@ -1,6 +1,8 @@
 import warnings
 from functools import partial
 
+from opendevin.core.exceptions import TokenLimitExceedError
+
 with warnings.catch_warnings():
     warnings.simplefilter('ignore')
     import litellm
@@ -27,6 +29,7 @@ from opendevin.core.metrics import Metrics
 __all__ = ['LLM']
 
 message_separator = '\n\n----------\n\n'
+MAX_TOKEN_COUNT_PADDING = 512  # estimation of tokens to add to the prompt for the user-configured max token count
 
 
 class LLM:
@@ -199,6 +202,11 @@ class LLM:
             else:
                 messages = args[1]
 
+            if self.is_over_token_limit(messages):
+                raise TokenLimitExceedError(
+                    f'Token count exceeds the maximum of {self.max_input_tokens}. Attempting to condense memory.'
+                )
+
             # log the prompt
             debug_message = ''
             for message in messages:
@@ -242,17 +250,25 @@ class LLM:
                 self.metrics.accumulated_cost,
             )
 
-    def get_token_count(self, messages):
+    def is_over_token_limit(self, messages: list[dict]) -> bool:
         """
-        Get the number of tokens in a list of messages.
+        Estimates the token count of the given events using litellm tokenizer and returns True if over the max_input_tokens value.
 
-        Args:
-            messages (list): A list of messages.
+        Parameters:
+        - messages: List of messages to estimate the token count for.
 
         Returns:
-            int: The number of tokens.
+        - Estimated token count.
         """
-        return litellm.token_counter(model=self.model_name, messages=messages)
+        # max_input_tokens will always be set in init to some sensible default
+        # 0 in config.llm disables the check
+        if not self.max_input_tokens:
+            return False
+        token_count = (
+            litellm.token_counter(model=self.model_name, messages=messages)
+            + MAX_TOKEN_COUNT_PADDING
+        )
+        return token_count >= self.max_input_tokens
 
     def is_local(self):
         """

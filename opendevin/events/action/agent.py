@@ -33,8 +33,20 @@ class AgentRecallAction(Action):
 
 @dataclass
 class AgentSummarizeAction(Action):
-    summary: str
+    """
+    Action to summarize a list of events.
+
+    Attributes:
+    - actions: A comma-separated list of all the action names from the summarized actions.
+    - summary: A single sentence summarizing all the observations.
+    """
+
+    summarized_actions: str = ''
+    summary: str = ''
     action: str = ActionType.SUMMARIZE
+    _chunk_start: int = -1
+    _chunk_end: int = -1
+    is_delegate_summary: bool = False
 
     @property
     def message(self) -> str:

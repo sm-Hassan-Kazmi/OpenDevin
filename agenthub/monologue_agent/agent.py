@@ -32,7 +32,6 @@ from opendevin.runtime.tools import RuntimeTool
 if config.agent.memory_enabled:
     from opendevin.memory.memory import LongTermMemory
 
-MAX_TOKEN_COUNT_PADDING = 512
 MAX_OUTPUT_LENGTH = 5000
 
 
@@ -47,7 +46,7 @@ class MonologueAgent(Agent):
     _initialized = False
     initial_thoughts: list[dict[str, str]]
     memory: 'LongTermMemory | None'
-    memory_condenser: MemoryCondenser
+    memory_condenser: MemoryCondenser | None
     runtime_tools: list[RuntimeTool] = [RuntimeTool.BROWSER]
     response_parser = MonologueResponseParser()
 
@@ -59,6 +58,8 @@ class MonologueAgent(Agent):
         - llm (LLM): The llm to be used by this agent
         """
         super().__init__(llm)
+        self.memory = None
+        self.memory_condenser = None
 
     def _initialize(self, task: str):
         """
@@ -68,7 +69,7 @@ class MonologueAgent(Agent):
         Will execute again when called after reset.
 
         Parameters:
-        - task (str): The initial goal statement provided by the user
+        - task: The initial goal statement provided by the user
 
         Raises:
         - AgentNoInstructionError: If task is not provided
@@ -86,7 +87,7 @@ class MonologueAgent(Agent):
         else:
             self.memory = None
 
-        self.memory_condenser = MemoryCondenser()
+        # self.memory_condenser = MemoryCondenser(action_prompt=prompts.get_action_prompt)
 
         self._add_initial_thoughts(task)
         self._initialized = True
@@ -143,10 +144,10 @@ class MonologueAgent(Agent):
         Modifies the current state by adding the most recent actions and observations, then prompts the model to think about it's next action to take using monologue, memory, and hint.
 
         Parameters:
-        - state (State): The current state based on previous steps taken
+        - state: The current state based on previous steps taken
 
         Returns:
-        - Action: The next action to take based on LLM response
+        - The next action to take based on LLM response
         """
 
         goal = state.get_current_user_intent()
@@ -155,25 +156,25 @@ class MonologueAgent(Agent):
         recent_events: list[dict[str, str]] = []
 
         # add the events from state.history
-        for prev_action, obs in state.history:
-            if not isinstance(prev_action, NullAction):
-                recent_events.append(event_to_memory(prev_action))
-            if not isinstance(obs, NullObservation):
-                recent_events.append(self._truncate_output(event_to_memory(obs)))
+        for event in state.history.get_events():
+            recent_events.append(event_to_memory(event))
 
         # add the last messages to long term memory
-        if self.memory is not None and state.history and len(state.history) > 0:
-            self.memory.add_event(event_to_memory(state.history[-1][0]))
-            self.memory.add_event(
-                self._truncate_output(event_to_memory(state.history[-1][1]))
-            )
+        if self.memory is not None:
+            last_action = state.history.get_last_action()
+            last_observation = state.history.get_last_observation()
+
+            if last_action:
+                self.memory.add_event(event_to_memory(last_action))
+            if last_observation:
+                self.memory.add_event(event_to_memory(last_observation))
 
         # the action prompt with initial thoughts and recent events
         prompt = prompts.get_request_action_prompt(
             goal,
             self.initial_thoughts,
             recent_events,
-            state.background_commands_obs,
+            state.background_commands_obs,  # FIXME is this part of recent_events?
         )
 
         messages: list[dict[str, str]] = [
@@ -192,43 +193,16 @@ class MonologueAgent(Agent):
         self.latest_action = action
         return action
 
-    def _truncate_output(
-        self, observation: dict, max_chars: int = MAX_OUTPUT_LENGTH
-    ) -> dict[str, str]:
-        """
-        Truncates the output of an observation to a maximum number of characters.
-
-        Parameters:
-        - output (str): The observation whose output to truncate
-        - max_chars (int): The maximum number of characters to allow
-
-        Returns:
-        - str: The truncated output
-        """
-        if (
-            'args' in observation
-            and 'output' in observation['args']
-            and len(observation['args']['output']) > max_chars
-        ):
-            output = observation['args']['output']
-            half = max_chars // 2
-            observation['args']['output'] = (
-                output[:half]
-                + '\n[... Output truncated due to length...]\n'
-                + output[-half:]
-            )
-        return observation
-
     def search_memory(self, query: str) -> list[str]:
         """
         Uses VectorIndexRetriever to find related memories within the long term memory.
         Uses search to produce top 10 results.
 
         Parameters:
-        - query (str): The query that we want to find related memories for
+        - The query that we want to find related memories for
 
         Returns:
-        - list[str]: A list of top 10 text results that matched the query
+        - A list of top 10 text results that matched the query
         """
         if self.memory is None:
             return []

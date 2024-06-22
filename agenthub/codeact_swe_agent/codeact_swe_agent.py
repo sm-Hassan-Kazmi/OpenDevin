@@ -18,6 +18,7 @@ from opendevin.events.observation import (
     CmdOutputObservation,
     IPythonRunCellObservation,
 )
+from opendevin.events.serialization.event import truncate_content
 from opendevin.llm.llm import LLM
 from opendevin.runtime.plugins import (
     AgentSkillsRequirement,
@@ -52,7 +53,7 @@ def get_action_message(action: Action) -> dict[str, str] | None:
 
 def get_observation_message(obs) -> dict[str, str] | None:
     if isinstance(obs, CmdOutputObservation):
-        content = 'OBSERVATION:\n' + truncate_observation(obs.content)
+        content = 'OBSERVATION:\n' + truncate_content(obs.content)
         content += (
             f'\n[Command {obs.command_id} finished with exit code {obs.exit_code}]'
         )
@@ -67,23 +68,9 @@ def get_observation_message(obs) -> dict[str, str] | None:
                     '![image](data:image/png;base64, ...) already displayed to user'
                 )
         content = '\n'.join(splitted)
-        content = truncate_observation(content)
+        content = truncate_content(content)
         return {'role': 'user', 'content': content}
     return None
-
-
-def truncate_observation(observation: str, max_chars: int = 10_000) -> str:
-    """
-    Truncate the middle of the observation if it is too long.
-    """
-    if len(observation) <= max_chars:
-        return observation
-    half = max_chars // 2
-    return (
-        observation[:half]
-        + '\n[... Observation truncated due to length ...]\n'
-        + observation[-half:]
-    )
 
 
 def get_system_message() -> str:
@@ -151,27 +138,12 @@ class CodeActSWEAgent(Agent):
         - MessageAction(content) - Message action to run (e.g. ask for clarification)
         - AgentFinishAction() - end the interaction
         """
-        messages: list[dict[str, str]] = [
-            {'role': 'system', 'content': self.system_message},
-            {'role': 'user', 'content': self.in_context_example},
-        ]
+        messages: list[dict[str, str]] = self._get_messages(state)
 
-        for prev_action, obs in state.history:
-            action_message = get_action_message(prev_action)
-            if action_message:
-                messages.append(action_message)
-
-            obs_message = get_observation_message(obs)
-            if obs_message:
-                messages.append(obs_message)
-
-        latest_user_message = [m for m in messages if m['role'] == 'user'][-1]
-        if latest_user_message:
-            if latest_user_message['content'].strip() == '/exit':
-                return AgentFinishAction()
-            latest_user_message['content'] += (
-                f'\n\nENVIRONMENT REMINDER: You have {state.max_iterations - state.iteration} turns left to complete the task.'
-            )
+        # if we're done, go back
+        latest_user_message = state.history.get_latest_user_message()
+        if latest_user_message and latest_user_message.strip() == '/exit':
+            return AgentFinishAction()
 
         response = self.llm.completion(
             messages=messages,
@@ -189,3 +161,31 @@ class CodeActSWEAgent(Agent):
 
     def search_memory(self, query: str) -> list[str]:
         raise NotImplementedError('Implement this abstract method')
+
+    def _get_messages(self, state: State) -> list[dict[str, str]]:
+        messages = [
+            {'role': 'system', 'content': self.system_message},
+            {
+                'role': 'user',
+                'content': self.in_context_example,
+            },
+        ]
+
+        for event in state.history.get_events():
+            message = (
+                get_action_message(event)
+                if isinstance(event, Action)
+                else get_observation_message(event)
+            )
+            if message:
+                messages.append(message)
+
+        latest_user_message = next(
+            (m for m in reversed(messages) if m['role'] == 'user'), None
+        )
+        if latest_user_message:
+            latest_user_message['content'] += (
+                f'\n\nENVIRONMENT REMINDER: You have {state.max_iterations - state.iteration} turns left to complete the task.'
+            )
+
+        return messages
